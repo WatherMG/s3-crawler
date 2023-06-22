@@ -103,3 +103,9 @@ fabric.properties
 # Go workspace file
 go.work
 
+.env
+/tmp*
+/data_s3*
+/.localstack*
+/build*
+/s3_data*

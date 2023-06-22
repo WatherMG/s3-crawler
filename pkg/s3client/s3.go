@@ -1,10 +1,10 @@
-package s3
+package s3client
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"s3-crawler/pkg/configuration"
@@ -18,11 +18,23 @@ import (
 )
 
 type Client struct {
-	s3Client *s3.Client
-	cfg      *configuration.Configuration
+	*s3.Client
+	cfg        *configuration.Configuration
+	Objects    chan types.Object
+	input      *s3.ListObjectsV2Input
+	pagesCount int32
 }
 
-func NewClient(ctx context.Context, cfg *configuration.Configuration) (*s3.Client, error) {
+func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
+	client := &Client{
+		cfg:     cfg,
+		Objects: make(chan types.Object, cfg.Pagination.MaxKeys),
+		input: &s3.ListObjectsV2Input{
+			Bucket:  &cfg.BucketName,
+			Prefix:  &cfg.Prefix,
+			MaxKeys: cfg.Pagination.MaxKeys,
+		},
+	}
 	config, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
 		aws.EndpointResolverWithOptionsFunc(
 			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
@@ -42,7 +54,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*s3.Clien
 	if err != nil {
 		return nil, err
 	}
-	client := s3.NewFromConfig(config)
+	client.Client = s3.NewFromConfig(config)
 	return client, nil
 }
 
@@ -50,68 +62,48 @@ func (c *Client) CheckBucket(ctx context.Context) error {
 	input := &s3.HeadBucketInput{
 		Bucket: aws.String(c.cfg.BucketName),
 	}
-	_, err := c.s3Client.HeadBucket(ctx, input)
+	_, err := c.HeadBucket(ctx, input)
 	return err
 }
 
-var mu sync.Mutex
+func (c *Client) ListFiles(ctx context.Context) ([]*downloader.File, error) {
+	objects, err := c.ListObjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]*downloader.File, len(objects), c.cfg.Pagination.MaxKeys*c.pagesCount)
 
-func (c *Client) ListFiles(ctx context.Context) (downloader.Bucket, error) {
 	start := time.Now()
-	var files downloader.Bucket
-	input := &s3.ListObjectsV2Input{
-		Bucket:  &c.cfg.BucketName,
-		Prefix:  &c.cfg.Prefix,
-		MaxKeys: c.cfg.Pagination.MaxKeys,
-	}
-	paginator := s3.NewListObjectsV2Paginator(c.s3Client, input)
 
-	filesCh := make(chan *downloader.File, c.cfg.Pagination.MaxKeys)
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < c.cfg.CPUWorker; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for file := range filesCh {
-				if strings.HasSuffix(file.Key, c.cfg.Extension) && strings.Contains(file.Key, c.cfg.NameMask) {
-					mu.Lock()
-					files.Files = append(files.Files, file)
-					mu.Unlock()
-				}
+	for i, object := range objects {
+		if strings.HasSuffix(*object.Key, c.cfg.Extension) && strings.Contains(*object.Key, c.cfg.NameMask) {
+			file := &downloader.File{
+				Key:  *object.Key,
+				Size: object.Size,
 			}
-		}()
+			files[i] = file
+		}
 	}
 
-	var pagesWG sync.WaitGroup
-	pageNum := 0
+	fmt.Printf("Total files to download:%d\n", len(files))
+	log.Printf("ListFiles, elapsed: %s", time.Since(start))
+	return files, nil
+}
+
+func (c *Client) ListObjects(ctx context.Context) ([]types.Object, error) {
+	start := time.Now()
+	paginator := s3.NewListObjectsV2Paginator(c, c.input)
+	objects := make([]types.Object, 0, c.cfg.Pagination.MaxKeys)
+
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			log.Printf("Error getting page: %v", err)
-			continue
+			return nil, err
 		}
-		pageNum++
-		log.Printf("Current page: %d", pageNum)
-		for _, object := range page.Contents {
-			pagesWG.Add(1)
-			go func(object types.Object) {
-				defer pagesWG.Done()
-				file := &downloader.File{
-					Key:  *object.Key,
-					Size: object.Size,
-				}
-				filesCh <- file
-			}(object)
-		}
+		objects = append(objects, page.Contents...)
+		c.pagesCount++
 	}
-	go func() {
-		pagesWG.Wait()
-		close(filesCh)
-		wg.Wait()
-	}()
-
-	log.Printf("ListFiles, elapsed: %s", time.Since(start))
-	return files, nil
+	log.Printf("ListObjects, elapsed: %s", time.Since(start))
+	log.Printf("Files in bucket: %d", len(objects))
+	return objects, nil
 }
