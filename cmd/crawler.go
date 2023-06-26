@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"runtime"
 
 	"s3-crawler/pkg/configuration"
+	"s3-crawler/pkg/downloader"
 	"s3-crawler/pkg/s3client"
 )
 
 func main() {
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -17,6 +19,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	runtime.GOMAXPROCS(cfg.CPUWorker)
 	client, err := s3client.NewClient(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -24,13 +27,10 @@ func main() {
 	if err = client.CheckBucket(ctx); err != nil {
 		log.Fatal(err)
 	}
-	files, err := client.ListFiles(ctx)
+	files, err := client.ListObjects(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(len(files))
-	/*manager := downloader.NewDownloader(client.Client, cfg, len(files))
-	if err = manager.Download(ctx, files); err != nil {
-		log.Fatal(err)
-	}*/
+	manager := downloader.NewDownloader(client, cfg)
+	manager.DownloadFiles(ctx, files)
 }

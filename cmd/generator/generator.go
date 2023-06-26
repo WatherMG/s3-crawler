@@ -166,8 +166,8 @@ var (
 	maxSize         = int(1024 * 1024 * *fileSize)
 )
 
-var count = flag.Int("count", 10, "Count of files in one dir")
-var fileSize = flag.Float64("size", 0.1, "Max filesize")
+var count = flag.Int("count", 12500, "Count of files in one dir")
+var fileSize = flag.Float64("size", 0.001, "Max filesize")
 
 func main() {
 	flag.Parse()
@@ -179,7 +179,7 @@ func main() {
 
 	for _, directory := range directoryNames {
 		rndCount := rand.Intn(*count-1) + 1
-		dirPath := filepath.Join("./s3_data", directory)
+		dirPath := filepath.Join("./s3_data/low", directory)
 		createDirAndGenerateFiles(dirPath, rndCount, bufPool)
 
 		for i := 0; i < rand.Intn(3)+1; i++ {
