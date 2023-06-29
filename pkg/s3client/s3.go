@@ -3,6 +3,7 @@ package s3client
 import (
 	"context"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -20,22 +21,23 @@ import (
 
 type Client struct {
 	*s3.Client
-	cfg        *configuration.Configuration
-	Objects    chan types.Object
-	input      *s3.ListObjectsV2Input
-	PagesCount int32
-	wg         sync.WaitGroup
+	cfg            *configuration.Configuration
+	input          *s3.ListObjectsV2Input
+	wg             *sync.WaitGroup
+	objectsChan    chan types.Object
+	PagesCount     int32
+	goroutineCount int
 }
 
 func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
 	client := &Client{
-		cfg:     cfg,
-		Objects: make(chan types.Object, cfg.Pagination.MaxKeys),
+		cfg: cfg,
 		input: &s3.ListObjectsV2Input{
 			Bucket:  aws.String(cfg.BucketName),
 			Prefix:  aws.String(cfg.Prefix),
 			MaxKeys: int32(cfg.Pagination.MaxKeys),
 		},
+		wg: &sync.WaitGroup{},
 	}
 	config, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
 		aws.EndpointResolverWithOptionsFunc(
@@ -78,54 +80,64 @@ func (c *Client) CheckBucket(ctx context.Context) error {
 func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	start := time.Now()
 	paginator := s3.NewListObjectsV2Paginator(c, c.input)
+	c.objectsChan = make(chan types.Object, c.cfg.Pagination.MaxKeys)
 
-	c.wg.Add(1)
-	go func(data *files.Objects) {
-		defer c.wg.Done()
-	loop:
-		for {
-			select {
-			case object, ok := <-c.Objects:
-				if !ok {
-					// closed channel
-					break loop
-				}
-				if strings.HasSuffix(*object.Key, c.cfg.Extension) && strings.Contains(*object.Key, c.cfg.NameMask) {
-					newFile := files.NewFile(object)
-					cached := cache.HasFile(newFile.Key, newFile)
+	c.startObjectProcessor(ctx, data, cache)
+	if err := c.processPages(ctx, paginator); err != nil {
+		return err
+	}
+
+	c.waitForCompletion()
+
+	log.Printf("ListObjects, elapsed: %s\n", time.Since(start))
+	log.Printf("Files to download: %d\n", len(data.Objects))
+	return nil
+}
+
+func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			for object := range c.objectsChan {
+				name := *object.Key
+				if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
+					file := files.NewFile(object)
+					cached := cache.HasFile(name, file)
 					if !cached {
-						data.Objects <- newFile
+						data.Objects <- file
+					} else {
+						log.Printf("File %s did not pass the filter\n", name)
 					}
-					cache.RemoveFile(newFile.Key)
+					cache.RemoveFile(name)
 				}
-			case <-ctx.Done():
-				return
 			}
-		}
-	}(data)
+		}()
+	}
+}
+
+func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Paginator) error {
+	var totalObjects int
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return err
 		}
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			for _, object := range page.Contents {
-				c.Objects <- object
-			}
-		}()
+		c.sendObjectsToChannel(page.Contents)
 		c.PagesCount++
-		log.Printf("Page %d", c.PagesCount)
-		log.Printf("Items: %d", page.KeyCount)
+		totalObjects += len(page.Contents)
+		log.Printf("Page %d, %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
 	}
-
-	go func() {
-		c.wg.Wait()
-		close(c.Objects)
-	}()
-
-	log.Printf("ListObjects, elapsed: %s\n", time.Since(start))
-	log.Printf("Files to download: %d\n", len(data.Objects))
 	return nil
+}
+
+func (c *Client) sendObjectsToChannel(objects []types.Object) {
+	for _, object := range objects {
+		c.objectsChan <- object
+	}
+}
+
+func (c *Client) waitForCompletion() {
+	close(c.objectsChan)
+	c.wg.Wait()
 }

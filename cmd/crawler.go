@@ -10,7 +10,6 @@ import (
 
 	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
-	"s3-crawler/pkg/downloader"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/s3client"
 )
@@ -46,7 +45,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	data := files.NewObjects(cfg.Pagination.MaxKeys)
+	data := files.NewObjects(cfg.Pagination.MaxKeys * 15) // TODO reduce debug value for buffer
 
 	wg.Add(1)
 	go func() {
@@ -56,12 +55,12 @@ func main() {
 		}
 	}()
 
-	manager := downloader.NewDownloader(client, cfg)
+	/*manager := downloader.NewDownloader(client, cfg)
 	wg.Add(1)
 	go func(cache *cacher.FileCache) {
 		defer wg.Done()
 		manager.DownloadFiles(ctx, data)
-	}(cache)
+	}(cache)*/
 
 	wg.Wait()
 }
