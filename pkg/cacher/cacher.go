@@ -9,21 +9,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"text/tabwriter"
 
+	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 )
 
 const chunkSize = 8 * 1024 * 1024 // Используется для корректного разбиения на чанки для составления хеша локального файла, как на s3
 
 type FileCache struct {
-	Files map[string]*files.File
-	Count int64
-	mu    sync.Mutex
+	Files      map[string]*files.File
+	TotalCount int
+	mu         sync.Mutex
 }
 
 func NewCache() *FileCache {
@@ -36,7 +35,7 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Files[key] = info
-	c.Count++
+	c.TotalCount++
 }
 
 func (c *FileCache) HasFile(key string, info *files.File) bool {
@@ -44,14 +43,6 @@ func (c *FileCache) HasFile(key string, info *files.File) bool {
 	defer c.mu.Unlock()
 	fileName := strings.ReplaceAll(key, "/", "_")
 	cachedInfo, ok := c.Files[fileName]
-	if ok && (cachedInfo.ETag != info.ETag || cachedInfo.Size != info.Size) {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-		fmt.Fprintln(w, "File\tSize\tETag")
-		fmt.Fprintf(w, "%s\t%d\t%s\n", info.Key, info.Size, info.ETag)
-		fmt.Fprintf(w, "%s\t%d\t%s\n", cachedInfo.Key, cachedInfo.Size, cachedInfo.ETag)
-		w.Flush()
-	}
-
 	return ok && cachedInfo.ETag == info.ETag && cachedInfo.Size == info.Size
 }
 
@@ -59,16 +50,16 @@ func (c *FileCache) RemoveFile(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.Files, key)
-	c.Count--
+	c.TotalCount--
 }
 
-func (c *FileCache) LoadFromDir(dir string) error {
+func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	filesChan := make(chan string)
-	numWorkers := runtime.NumCPU()
+	numWorkers := cfg.CPUWorker
 	var wg sync.WaitGroup
 
 	c.startWorkers(numWorkers, &wg, filesChan)
-	err := c.walkDir(dir, filesChan)
+	err := c.walkDir(cfg.LocalPath, filesChan)
 	close(filesChan)
 	wg.Wait()
 	return err
@@ -93,18 +84,18 @@ func (c *FileCache) processFile(path string) {
 		return
 	}
 	if !info.IsDir() {
-		etag, err := calcEtag(path, chunkSize)
+		etag, err := calc2ETAG(path, chunkSize)
 		if err != nil {
 			fmt.Printf("Error calculating ETag for file %s: %s\n", path, err.Error())
 			return
 		}
 
-		file := files.FilePool.Get().(*files.File)
+		file := &files.File{}
 		file.Key = info.Name()
 		file.ETag = etag
 		file.Size = info.Size()
 		c.AddFile(info.Name(), file)
-		file.ReturnToPool()
+		// file.ReturnToPool()
 	}
 }
 
@@ -133,31 +124,62 @@ func calcEtag(filePath string, partSize int64) (string, error) {
 	}
 	defer file.Close()
 
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	filesize := info.Size()
-	size := partSize
-	if filesize < size {
-		size = filesize
-	}
+	// info, err := file.Stat()
+	// if err != nil {
+	// 	return "", err
+	// }
+	// filesize := info.Size()
+	// if filesize < size {
+	// 	size = filesize
+	// }
 	var md5Digest [][]byte
 	for {
-		chunk := chunkPool.Get().([]byte)[:size]
+		chunk := make([]byte, partSize)
 		n, err := file.Read(chunk)
 		if err != nil && !errors.Is(err, io.EOF) {
-			chunkPool.Put(chunk)
+			// chunkPool.Put(chunk)
 			return "", err
 		}
 		if n == 0 {
-			chunkPool.Put(chunk)
+			// chunkPool.Put(chunk)
 			break
 		}
 		chunk = chunk[:n]
 		hash := md5.Sum(chunk)
 		md5Digest = append(md5Digest, hash[:])
-		chunkPool.Put(chunk)
+		// chunkPool.Put(chunk)
+	}
+
+	if len(md5Digest) == 1 {
+		return hex.EncodeToString(md5Digest[0]), nil
+	}
+	var finalMD5 []byte
+	for _, digest := range md5Digest {
+		finalMD5 = append(finalMD5, digest...)
+	}
+	hash := md5.Sum(finalMD5)
+	return hex.EncodeToString(hash[:]) + "-" + strconv.Itoa(len(md5Digest)), nil
+}
+
+func calc2ETAG(filePath string, partSize int64) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	var md5Digest [][]byte
+	for {
+		chunk := make([]byte, partSize)
+		n, err := file.Read(chunk)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		if n == 0 {
+			break
+		}
+		hash := md5.Sum(chunk[:n])
+		md5Digest = append(md5Digest, hash[:])
 	}
 
 	if len(md5Digest) == 1 {

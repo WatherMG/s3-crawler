@@ -89,7 +89,7 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 	c.waitForCompletion()
 
 	log.Printf("ListObjects: elapsed: %s\n", time.Since(start))
-	log.Printf("ListObjects: Files to download: %d\n", len(data.Objects))
+	log.Printf("ListObjects: Files not in cache, need download: %d\n", len(data.Objects))
 	return nil
 }
 
@@ -107,13 +107,11 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 					name := *object.Key
 					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
 						file := files.NewFile(object)
-						// cached := cache.HasFile(name, file)
-						// if !cached {
-						data.Objects <- file
-						// } else {
-						// 	log.Printf("StartObjectProcessor: File %s did not pass the filter\n", name)
-						// }
-						// cache.RemoveFile(name)
+						cached := cache.HasFile(name, file)
+						if !cached {
+							data.Objects <- file
+						}
+						cache.RemoveFile(name)
 						// file.ReturnToPool()
 					}
 				}

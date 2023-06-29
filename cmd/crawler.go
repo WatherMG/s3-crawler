@@ -11,7 +11,6 @@ import (
 
 	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
-	"s3-crawler/pkg/downloader"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/s3client"
 )
@@ -33,11 +32,11 @@ func main() {
 
 	cache := cacher.NewCache() // TODO: add chacher if true to config
 	start := time.Now()
-	if err = cache.LoadFromDir(cfg.LocalPath); err != nil {
+	if err = cache.LoadFromDir(cfg); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("Cache loaded from %s\n", time.Since(start))
-	log.Printf("Files in cache: %d\n", cache.Count)
+	log.Printf("Total files in cache: %d\n", cache.TotalCount)
 
 	client, err := s3client.NewClient(ctx, cfg)
 	if err != nil {
@@ -50,12 +49,12 @@ func main() {
 
 	data := files.NewObjects(cfg.Pagination.MaxKeys * 15) // TODO reduce debug value for buffer
 
-	manager := downloader.NewDownloader(client, cfg)
+	/*manager := downloader.NewDownloader(client, cfg)
 	wg.Add(1)
 	go func(cache *cacher.FileCache) {
 		defer wg.Done()
 		manager.DownloadFiles(ctx, data)
-	}(cache)
+	}(cache)*/
 
 	wg.Add(1)
 	go func() {
