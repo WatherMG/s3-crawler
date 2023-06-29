@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -10,11 +11,13 @@ import (
 
 	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
+	"s3-crawler/pkg/downloader"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/s3client"
 )
 
 func main() {
+
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // TODO: add timeout to config
 	defer cancel()
@@ -47,6 +50,13 @@ func main() {
 
 	data := files.NewObjects(cfg.Pagination.MaxKeys * 15) // TODO reduce debug value for buffer
 
+	manager := downloader.NewDownloader(client, cfg)
+	wg.Add(1)
+	go func(cache *cacher.FileCache) {
+		defer wg.Done()
+		manager.DownloadFiles(ctx, data)
+	}(cache)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -55,14 +65,8 @@ func main() {
 		}
 	}()
 
-	/*manager := downloader.NewDownloader(client, cfg)
-	wg.Add(1)
-	go func(cache *cacher.FileCache) {
-		defer wg.Done()
-		manager.DownloadFiles(ctx, data)
-	}(cache)*/
-
 	wg.Wait()
+	memstat(data)
 }
 
 func createPath(path string) error {
@@ -71,4 +75,20 @@ func createPath(path string) error {
 		log.Printf("MkdirAll error: %v", err)
 	}
 	return err
+}
+func memstat(data *files.Objects) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	f, err := os.OpenFile("mem.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "------------------------------------\nMem for file Pool in listobjects\n")
+	fmt.Fprintf(f, "With %d objects in bucket\n", len(data.Objects))
+
+	fmt.Fprintf(f, "Alloc = %v MiB\n", m.Alloc/1024/1024)
+	fmt.Fprintf(f, "TotalAlloc = %v MiB\n", m.TotalAlloc/1024/1024)
+	fmt.Fprintf(f, "Sys = %v MiB\n", m.Sys/1024/1024)
+	fmt.Fprintf(f, "NumGC = %v\n", m.NumGC)
 }

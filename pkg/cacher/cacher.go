@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/tabwriter"
 
 	"s3-crawler/pkg/files"
 )
@@ -43,9 +44,14 @@ func (c *FileCache) HasFile(key string, info *files.File) bool {
 	defer c.mu.Unlock()
 	fileName := strings.ReplaceAll(key, "/", "_")
 	cachedInfo, ok := c.Files[fileName]
-	if ok {
-		fmt.Printf("S3 : %s %s\nLoc: %s %s\n", info.ETag, info.Key, cachedInfo.ETag, cachedInfo.Key)
+	if ok && (cachedInfo.ETag != info.ETag || cachedInfo.Size != info.Size) {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+		fmt.Fprintln(w, "File\tSize\tETag")
+		fmt.Fprintf(w, "%s\t%d\t%s\n", info.Key, info.Size, info.ETag)
+		fmt.Fprintf(w, "%s\t%d\t%s\n", cachedInfo.Key, cachedInfo.Size, cachedInfo.ETag)
+		w.Flush()
 	}
+
 	return ok && cachedInfo.ETag == info.ETag && cachedInfo.Size == info.Size
 }
 
@@ -98,6 +104,7 @@ func (c *FileCache) processFile(path string) {
 		file.ETag = etag
 		file.Size = info.Size()
 		c.AddFile(info.Name(), file)
+		file.ReturnToPool()
 	}
 }
 

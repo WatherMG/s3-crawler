@@ -3,7 +3,6 @@ package s3client
 import (
 	"context"
 	"log"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -89,27 +88,34 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 
 	c.waitForCompletion()
 
-	log.Printf("ListObjects, elapsed: %s\n", time.Since(start))
-	log.Printf("Files to download: %d\n", len(data.Objects))
+	log.Printf("ListObjects: elapsed: %s\n", time.Since(start))
+	log.Printf("ListObjects: Files to download: %d\n", len(data.Objects))
 	return nil
 }
 
 func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
-	for i := 0; i < runtime.NumCPU(); i++ {
+	for i := 0; i < c.cfg.CPUWorker; i++ {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
 			for object := range c.objectsChan {
-				name := *object.Key
-				if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
-					file := files.NewFile(object)
-					cached := cache.HasFile(name, file)
-					if !cached {
+				select {
+				case <-ctx.Done():
+					close(data.Objects)
+					return
+				default:
+					name := *object.Key
+					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
+						file := files.NewFile(object)
+						// cached := cache.HasFile(name, file)
+						// if !cached {
 						data.Objects <- file
-					} else {
-						log.Printf("File %s did not pass the filter\n", name)
+						// } else {
+						// 	log.Printf("StartObjectProcessor: File %s did not pass the filter\n", name)
+						// }
+						// cache.RemoveFile(name)
+						// file.ReturnToPool()
 					}
-					cache.RemoveFile(name)
 				}
 			}
 		}()
@@ -123,18 +129,26 @@ func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Pa
 		if err != nil {
 			return err
 		}
-		c.sendObjectsToChannel(page.Contents)
+		if err = c.sendObjectsToChannel(ctx, page.Contents); err != nil {
+			return err
+		}
 		c.PagesCount++
 		totalObjects += len(page.Contents)
-		log.Printf("Page %d, %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
+		log.Printf("ProcessPages: Page %d, %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
 	}
 	return nil
 }
 
-func (c *Client) sendObjectsToChannel(objects []types.Object) {
+func (c *Client) sendObjectsToChannel(ctx context.Context, objects []types.Object) error {
 	for _, object := range objects {
-		c.objectsChan <- object
+		select {
+		case c.objectsChan <- object:
+		case <-ctx.Done():
+			close(c.objectsChan)
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
 func (c *Client) waitForCompletion() {
