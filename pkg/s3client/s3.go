@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
+	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 
@@ -18,20 +20,21 @@ import (
 
 type Client struct {
 	*s3.Client
-	Cfg        *configuration.Configuration
+	cfg        *configuration.Configuration
 	Objects    chan types.Object
 	input      *s3.ListObjectsV2Input
-	pagesCount int32
+	PagesCount int32
+	wg         sync.WaitGroup
 }
 
 func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
 	client := &Client{
-		Cfg:     cfg,
+		cfg:     cfg,
 		Objects: make(chan types.Object, cfg.Pagination.MaxKeys),
 		input: &s3.ListObjectsV2Input{
-			Bucket:  &cfg.BucketName,
-			Prefix:  &cfg.Prefix,
-			MaxKeys: cfg.Pagination.MaxKeys,
+			Bucket:  aws.String(cfg.BucketName),
+			Prefix:  aws.String(cfg.Prefix),
+			MaxKeys: int32(cfg.Pagination.MaxKeys),
 		},
 	}
 	config, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
@@ -59,48 +62,70 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 
 func (c *Client) CheckBucket(ctx context.Context) error {
 	input := &s3.HeadBucketInput{
-		Bucket: aws.String(c.Cfg.BucketName),
+		Bucket: aws.String(c.cfg.BucketName),
 	}
 	log.Printf("Bucket name: %s", *input.Bucket)
 	_, err := c.HeadBucket(ctx, input)
 	return err
 }
 
-func (c *Client) ListObjects(ctx context.Context) (*files.Files, error) {
+// ListObjects lists objects from an S3 bucket using the ListObjectsV2 API. It
+// uses a paginator to retrieve the objects in pages and sends them to a
+// channel. A separate goroutine receives the objects from the channel, checks
+// if they meet certain criteria (based on their key), and sends them to another
+// channel if they are not in the cache. The function also keeps track of the
+// number of pages and logs some information.
+func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	start := time.Now()
 	paginator := s3.NewListObjectsV2Paginator(c, c.input)
-	objects := make(chan types.Object)
-	data := &files.Files{
-		Objects:    make([]*files.Object, 0, c.Cfg.Pagination.MaxKeys),
-		TotalBytes: 0,
-	}
 
-	go func() {
-		for object := range objects {
-			if strings.HasSuffix(*object.Key, c.Cfg.Extension) && strings.Contains(*object.Key, c.Cfg.NameMask) {
-				file := &files.Object{
-					Key:  *object.Key,
-					Size: object.Size,
+	c.wg.Add(1)
+	go func(data *files.Objects) {
+		defer c.wg.Done()
+	loop:
+		for {
+			select {
+			case object, ok := <-c.Objects:
+				if !ok {
+					// closed channel
+					break loop
 				}
-				data.Objects = append(data.Objects, file)
-				data.TotalBytes += file.Size
+				if strings.HasSuffix(*object.Key, c.cfg.Extension) && strings.Contains(*object.Key, c.cfg.NameMask) {
+					newFile := files.NewFile(object)
+					cached := cache.HasFile(newFile.Key, newFile)
+					if !cached {
+						data.Objects <- newFile
+					}
+					cache.RemoveFile(newFile.Key)
+				}
+			case <-ctx.Done():
+				return
 			}
 		}
-		close(objects)
-	}()
-
+	}(data)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for _, object := range page.Contents {
-			objects <- object
-		}
-		c.pagesCount++
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			for _, object := range page.Contents {
+				c.Objects <- object
+			}
+		}()
+		c.PagesCount++
+		log.Printf("Page %d", c.PagesCount)
+		log.Printf("Items: %d", page.KeyCount)
 	}
 
-	log.Printf("ListObjects, elapsed: %s", time.Since(start))
-	log.Printf("Files in bucket: %d", len(data.Objects))
-	return data, nil
+	go func() {
+		c.wg.Wait()
+		close(c.Objects)
+	}()
+
+	log.Printf("ListObjects, elapsed: %s\n", time.Since(start))
+	log.Printf("Files to download: %d\n", len(data.Objects))
+	return nil
 }
