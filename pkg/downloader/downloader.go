@@ -13,7 +13,6 @@ import (
 
 func (d *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) {
 	start := time.Now()
-	// sem := make(chan struct{}, d.cfg.Downloaders) // количество одновременно работающих горутин для загрузки
 
 	// bar := progressbar.NewOptions64(int64(data.GetTotalBytes()),
 	// 	progressbar.OptionShowBytes(true),
@@ -24,8 +23,9 @@ func (d *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) {
 	// 		BarStart:      "[",
 	// 		BarEnd:        "]",
 	// 	}))
-	// data.ResetBytes()
+	data.ResetBytes()
 	// bar.Describe("Download:")
+	var downloadCount int
 
 	for file := range data.Objects {
 		d.wg.Add(1)
@@ -37,13 +37,17 @@ func (d *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) {
 			}()
 			progressbar.OptionSetDescription(fmt.Sprintf("Downloading: %s", file.Key))
 			// bar.ChangeMax64(file.Size)
-			numBytes, err := d.Download(ctx, file)
+
+			numBytes, err := d.DownloadFile(ctx, file)
 			if err != nil {
-				log.Printf("Download error %s: %v", file.Key, err)
+				log.Printf("DownloadFile error %s: %v", file.Key, err)
 			}
+
 			file.ReturnToPool()
+
 			fmt.Printf("download file %s\n", file.Key)
 			data.AddBytes(numBytes)
+			downloadCount++
 			// bar.Add64(numBytes)
 		}(file /*bar*/)
 	}
@@ -60,7 +64,6 @@ func (d *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) {
 		return 0, err
 	}
 	defer file.Close()*/
-	close(data.Objects)
 	d.wg.Wait()
 	// close(sem)
 

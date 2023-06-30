@@ -36,6 +36,7 @@ var once sync.Once
 // Singleton pattern.
 func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
 	var err error
+
 	once.Do(func() {
 		s3Client = &Client{
 			cfg: cfg,
@@ -67,6 +68,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 		}
 		s3Client.Client = s3.NewFromConfig(defaultConfig)
 	})
+
 	return s3Client, err
 }
 
@@ -77,6 +79,7 @@ func (c *Client) CheckBucket(ctx context.Context) error {
 	}
 	log.Printf("Bucket name: %s", *input.Bucket)
 	_, err := c.HeadBucket(ctx, input)
+
 	return err
 }
 
@@ -88,14 +91,17 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 	c.objectsChan = make(chan types.Object, c.cfg.CPUWorker*2)
 
 	c.startObjectProcessor(ctx, data, cache)
+
 	if err := c.processPages(ctx, paginator); err != nil {
 		return err
 	}
 
 	c.waitForCompletion()
+	close(data.Objects)
 
 	log.Printf("ListObjects: elapsed: %s\n", time.Since(start))
 	log.Printf("ListObjects: Files not in cache, need download: %d\n", len(data.Objects))
+
 	return nil
 }
 
@@ -104,7 +110,7 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 // not, they send it to be downloaded. They also remove downloaded files from the
 // cache.
 func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
-	for i := 0; i < c.cfg.CPUWorker; i++ {
+	for i := uint8(0); i < c.cfg.CPUWorker; i++ {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
@@ -117,7 +123,7 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 					name := *object.Key
 					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
 						file := files.NewFileFromObject(object)
-						cached := cache.HasFile(name, file)
+						cached := cache.HasFile(file)
 						if !cached {
 							data.Objects <- file
 						}
@@ -132,17 +138,21 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 // processPages processes pages of results returned by the paginator and sends items to be processed.
 func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Paginator) error {
 	var totalObjects int
+
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return err
 		}
+
 		if err = c.sendObjectsToChannel(ctx, page.Contents); err != nil {
 			return err
 		}
+
 		c.PagesCount++
+
 		totalObjects += len(page.Contents)
-		log.Printf("ProcessPages: Page %d, %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
+		log.Printf("ProcessPages: Page %d. %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
 	}
 	return nil
 }
@@ -157,6 +167,7 @@ func (c *Client) sendObjectsToChannel(ctx context.Context, objects []types.Objec
 			return ctx.Err()
 		}
 	}
+
 	return nil
 }
 

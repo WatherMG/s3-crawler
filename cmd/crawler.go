@@ -16,7 +16,10 @@ import (
 )
 
 func main() {
+	runTime := time.Now()
+
 	var wg sync.WaitGroup
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // TODO: add timeout to config
 	defer cancel()
 
@@ -24,13 +27,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	runtime.GOMAXPROCS(cfg.CPUWorker)
+
+	runtime.GOMAXPROCS(int(cfg.CPUWorker))
+
 	if err = createPath(cfg.LocalPath); err != nil {
 		log.Fatal(err)
 	}
 
-	cache := cacher.GetInstance() // TODO: add chacher if true to config
+	cache := cacher.NewCache() // TODO: add chacher if true to config
+
 	start := time.Now()
+
 	if err = cache.LoadFromDir(cfg); err != nil {
 		log.Fatal(err)
 	}
@@ -46,8 +53,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	data := files.GetInstance(cfg.Pagination.MaxKeys * 15) // TODO set the cfg.Downloaders for optimizations
-
+	data := files.NewObject(uint32(cfg.Downloaders)) // TODO set the cfg.Downloaders for optimizations
 	/*manager := downloader.NewDownloader(client, cfg)
 	wg.Add(1)
 	go func(cache *cacher.FileCache) {
@@ -55,16 +61,23 @@ func main() {
 		manager.DownloadFiles(ctx, data)
 	}(cache)*/
 
-	wg.Add(1)
+	/*if err = client.ListObjects(ctx, data, cache); err != nil {
+		log.Fatal(err) // TODO: разобраться почему горутины не синхронизованы и кеш отрабатывает не корректно = рандом количество файлов.
+	}*/
+	/*wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err = client.ListObjects(ctx, data, cache); err != nil {
-			log.Fatal(err) // TODO: разобраться почему горутины не синхронизованы и кеш отрабатывает не корректно = рандом количество файлов.
+		for object := range data.Objects {
+			fmt.Println(*object)
+			object.ReturnToPool()
 		}
-	}()
+	}()*/
 
 	wg.Wait()
+
 	memstat(data)
+	fmt.Printf("Programm running total %s", time.Since(runTime))
+	// fmt.Scanln()
 }
 
 func createPath(path string) error {

@@ -9,21 +9,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-const MiB = 1024 * 1024 // MiB is a constant representing the number of bytes in a mebibyte.
+const (
+	MiB       = 1024 * 1024 // MiB is a constant representing the number of bytes in a mebibyte.
+	ChunkSize = 8 * MiB     // Используется для корректного разбиения на чанки для составления хеша локального файла, как на s3 =
+)
 
 // Objects represents a collection of File objects.
 type Objects struct {
-	Objects    chan *File // Objects is a channel of File objects.
-	totalBytes int64      // totalBytes is the total number of bytes in the Objects collection.
-	count      uint32     // count is the current count of objects in the Objects collection.
 	sync.Mutex            // Mutex is used to synchronize access to shared resources.
+	totalBytes int64      // totalBytes is the total number of bytes in the Objects collection.
+	Objects    chan *File // Objects is a channel of File objects.
+	count      uint32     // count is the current count of objects in the Objects collection.
 }
 
 var objects *Objects // objects is a pointer to the singleton instance of the Objects structure.
 var once sync.Once   // once is used to synchronize and ensure that objects initialization happens only once.
 
-// GetInstance returns the singleton objects of the Objects structure.
-func GetInstance(capacity uint32) *Objects {
+// NewObject returns the singleton objects of the Objects structure.
+func NewObject(capacity uint32) *Objects {
 	once.Do(func() {
 		objects = &Objects{
 			Objects:    make(chan *File, capacity),
@@ -31,14 +34,15 @@ func GetInstance(capacity uint32) *Objects {
 			count:      0,
 		}
 	})
+
 	return objects
 }
 
 // File represents a file with a Key, Size, and ETag.
 type File struct {
 	Key  string // Key is the key of the file.
-	Size int64  // Size is the size of the file in bytes.
 	ETag string // ETag is the ETag of the file.
+	Size int64  // Size is the size of the file in bytes.
 }
 
 // filePool is a pool of File objects for reuse.
@@ -55,6 +59,7 @@ func NewFileFromObject(obj types.Object) *File {
 	file.Key = *obj.Key
 	file.Size = obj.Size
 	file.ETag = strings.Trim(*obj.ETag, "\"")
+
 	return file
 }
 
@@ -62,6 +67,7 @@ func NewFileFromObject(obj types.Object) *File {
 func NewFile() *File {
 	file := filePool.Get().(*File)
 	file.reset()
+
 	return file
 }
 
