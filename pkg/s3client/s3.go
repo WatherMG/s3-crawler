@@ -18,49 +18,59 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// Client represents an S3 client.
 type Client struct {
 	*s3.Client
-	cfg            *configuration.Configuration
-	input          *s3.ListObjectsV2Input
-	wg             *sync.WaitGroup
-	objectsChan    chan types.Object
-	PagesCount     int32
-	goroutineCount int
+	cfg         *configuration.Configuration // Configuration for the S3 client.
+	input       *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
+	wg          *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
+	objectsChan chan types.Object            // Channel to send objects to be processed.
+	PagesCount  int32                        // Number of pages processed by the paginator.
 }
 
+var s3Client *Client
+var once sync.Once
+
+// NewClient creates a new S3 client with the given context and configuration.
+// It ensures that only one instance of the S3 client is created using the
+// Singleton pattern.
 func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
-	client := &Client{
-		cfg: cfg,
-		input: &s3.ListObjectsV2Input{
-			Bucket:  aws.String(cfg.BucketName),
-			Prefix:  aws.String(cfg.Prefix),
-			MaxKeys: int32(cfg.Pagination.MaxKeys),
-		},
-		wg: &sync.WaitGroup{},
-	}
-	config, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
-		aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:           cfg.S3Connection.Endpoint,
-					SigningRegion: cfg.S3Connection.Region,
-				}, nil
+	var err error
+	once.Do(func() {
+		s3Client = &Client{
+			cfg: cfg,
+			input: &s3.ListObjectsV2Input{
+				Bucket:  aws.String(cfg.BucketName),    // The name of the bucket to list objects from.
+				Prefix:  aws.String(cfg.Prefix),        // The prefix of the keys to list objects from.
+				MaxKeys: int32(cfg.Pagination.MaxKeys), // The maximum number of keys to return in each page of results.
 			},
-		)),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.S3Connection.AccessKeyID,
-			cfg.S3Connection.SecretAccessKey,
-			"",
-		)),
-		config.WithRegion(cfg.S3Connection.Region),
-	)
-	if err != nil {
-		return nil, err
-	}
-	client.Client = s3.NewFromConfig(config)
-	return client, nil
+			wg: &sync.WaitGroup{},
+		}
+		defaultConfig, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
+			aws.EndpointResolverWithOptionsFunc(
+				func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+					return aws.Endpoint{
+						URL:           cfg.S3Connection.Endpoint, // The endpoint URL to use for the S3 service.
+						SigningRegion: cfg.S3Connection.Region,   // The region to use for signing requests.
+					}, nil
+				},
+			)),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				cfg.S3Connection.AccessKeyID,     // The access key ID to use for authentication.
+				cfg.S3Connection.SecretAccessKey, // The secret access key to use for authentication.
+				"",
+			)),
+			config.WithRegion(cfg.S3Connection.Region), // The region to use for the S3 service.
+		)
+		if err != nil {
+			return
+		}
+		s3Client.Client = s3.NewFromConfig(defaultConfig)
+	})
+	return s3Client, err
 }
 
+// CheckBucket checks if the bucket specified in the configuration exists and is accessible.
 func (c *Client) CheckBucket(ctx context.Context) error {
 	input := &s3.HeadBucketInput{
 		Bucket: aws.String(c.cfg.BucketName),
@@ -70,12 +80,8 @@ func (c *Client) CheckBucket(ctx context.Context) error {
 	return err
 }
 
-// ListObjects lists objects from an S3 bucket using the ListObjectsV2 API. It
-// uses a paginator to retrieve the objects in pages and sends them to a
-// channel. A separate goroutine receives the objects from the channel, checks
-// if they meet certain criteria (based on their key), and sends them to another
-// channel if they are not in the cache. The function also keeps track of the
-// number of pages and logs some information.
+// ListObjects lists objects from the bucket specified in the configuration and
+// sends them to be processed.
 func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	start := time.Now()
 	paginator := s3.NewListObjectsV2Paginator(c, c.input)
@@ -93,6 +99,10 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 	return nil
 }
 
+// startObjectProcessor starts workers that process items sent through the
+// objectsChan channel. Workers check if an item is already in the cache and if
+// not, they send it to be downloaded. They also remove downloaded files from the
+// cache.
 func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
 	for i := 0; i < c.cfg.CPUWorker; i++ {
 		c.wg.Add(1)
@@ -119,6 +129,7 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 	}
 }
 
+// processPages processes pages of results returned by the paginator and sends items to be processed.
 func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Paginator) error {
 	var totalObjects int
 	for paginator.HasMorePages() {
@@ -136,6 +147,7 @@ func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Pa
 	return nil
 }
 
+// sendObjectsToChannel sends items to be processed through the objectsChan channel.
 func (c *Client) sendObjectsToChannel(ctx context.Context, objects []types.Object) error {
 	for _, object := range objects {
 		select {
@@ -148,6 +160,7 @@ func (c *Client) sendObjectsToChannel(ctx context.Context, objects []types.Objec
 	return nil
 }
 
+// waitForCompletion waits for all goroutines to finish processing items.
 func (c *Client) waitForCompletion() {
 	close(c.objectsChan)
 	c.wg.Wait()
