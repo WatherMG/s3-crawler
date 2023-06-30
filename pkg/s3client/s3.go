@@ -79,7 +79,7 @@ func (c *Client) CheckBucket(ctx context.Context) error {
 func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	start := time.Now()
 	paginator := s3.NewListObjectsV2Paginator(c, c.input)
-	c.objectsChan = make(chan types.Object, c.cfg.Pagination.MaxKeys)
+	c.objectsChan = make(chan types.Object, c.cfg.CPUWorker*2)
 
 	c.startObjectProcessor(ctx, data, cache)
 	if err := c.processPages(ctx, paginator); err != nil {
@@ -106,13 +106,12 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 				default:
 					name := *object.Key
 					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
-						file := files.NewFile(object)
+						file := files.NewFileFromObject(object)
 						cached := cache.HasFile(name, file)
 						if !cached {
 							data.Objects <- file
 						}
 						cache.RemoveFile(name)
-						// file.ReturnToPool()
 					}
 				}
 			}

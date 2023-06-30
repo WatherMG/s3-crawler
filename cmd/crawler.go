@@ -16,7 +16,6 @@ import (
 )
 
 func main() {
-
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // TODO: add timeout to config
 	defer cancel()
@@ -30,7 +29,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cache := cacher.NewCache() // TODO: add chacher if true to config
+	cache := cacher.GetInstance() // TODO: add chacher if true to config
 	start := time.Now()
 	if err = cache.LoadFromDir(cfg); err != nil {
 		log.Fatal(err)
@@ -47,7 +46,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	data := files.NewObjects(cfg.Pagination.MaxKeys * 15) // TODO reduce debug value for buffer
+	data := files.GetInstance(cfg.Pagination.MaxKeys * 15) // TODO set the cfg.Downloaders for optimizations
 
 	/*manager := downloader.NewDownloader(client, cfg)
 	wg.Add(1)

@@ -16,10 +16,10 @@ func TestListObjects(t *testing.T) {
 	const fileCount = 12945 // in bucket
 	cfg, _ := configuration.LoadConfig("../config.json")
 	client, _ := s3client.NewClient(context.Background(), cfg)
-	data := files.NewObjects(fileCount)
-	cache := cacher.NewCache()
+	data := files.GetInstance(fileCount)
+	cache := cacher.GetInstance()
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		fmt.Println("----------------------------------------")
 		err := client.ListObjects(context.Background(), data, cache)
 		if err != nil {
@@ -32,8 +32,6 @@ func TestListObjects(t *testing.T) {
 			<-data.Objects
 		}
 		log.Printf("Reset data. Len of objects in channel %d\n", len(data.Objects))
-		fmt.Println("----------------------------------------")
 		client.PagesCount = 0
 	}
-
 }

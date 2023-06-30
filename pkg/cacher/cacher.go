@@ -25,10 +25,17 @@ type FileCache struct {
 	mu         sync.Mutex
 }
 
-func NewCache() *FileCache {
-	return &FileCache{
-		Files: make(map[string]*files.File),
-	}
+var fileCache *FileCache // fileCache is a pointer to the singleton instance of the FileCache structure.
+var once sync.Once       // once is used to synchronize and ensure that objects initialization happens only once.
+
+// GetInstance returns the singleton objects of the FileCache structure.
+func GetInstance() *FileCache {
+	once.Do(func() {
+		fileCache = &FileCache{
+			Files: make(map[string]*files.File),
+		}
+	})
+	return fileCache
 }
 
 func (c *FileCache) AddFile(key string, info *files.File) {
@@ -49,6 +56,9 @@ func (c *FileCache) HasFile(key string, info *files.File) bool {
 func (c *FileCache) RemoveFile(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if file, ok := c.Files[key]; ok {
+		file.ReturnToPool()
+	}
 	delete(c.Files, key)
 	c.TotalCount--
 }
@@ -90,12 +100,12 @@ func (c *FileCache) processFile(path string) {
 			return
 		}
 
-		file := &files.File{}
+		file := files.NewFile()
 		file.Key = info.Name()
 		file.ETag = etag
 		file.Size = info.Size()
 		c.AddFile(info.Name(), file)
-		// file.ReturnToPool()
+		file.ReturnToPool()
 	}
 }
 
