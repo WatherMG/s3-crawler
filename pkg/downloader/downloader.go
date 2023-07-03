@@ -23,7 +23,7 @@ func (d *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) {
 	// 		BarStart:      "[",
 	// 		BarEnd:        "]",
 	// 	}))
-	data.ResetBytes()
+
 	// bar.Describe("Download:")
 	var downloadCount int
 

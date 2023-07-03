@@ -3,72 +3,21 @@ package cacher
 import (
 	"crypto/md5"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 )
 
-type FileCache struct {
-	Files      map[string]*files.File
-	TotalCount int
-	mu         sync.Mutex
-}
-
-var fileCache *FileCache // fileCache is a pointer to the singleton instance of the FileCache structure.
-var once sync.Once       // once is used to synchronize and ensure that objects initialization happens only once.
-
-// NewCache returns the singleton objects of the FileCache structure.
-func NewCache() *FileCache {
-	once.Do(func() {
-		fileCache = &FileCache{
-			Files: make(map[string]*files.File),
-		}
-	})
-
-	return fileCache
-}
-
-func (c *FileCache) AddFile(key string, info *files.File) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.Files[key] = info
-	c.TotalCount++
-}
-
-func (c *FileCache) HasFile(info *files.File) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	filename := strings.ReplaceAll(info.Key, "/", "_")
-
-	cachedInfo, ok := c.Files[filename]
-
-	return ok && cachedInfo.ETag == info.ETag && cachedInfo.Size == info.Size
-}
-
-func (c *FileCache) RemoveFile(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if file, ok := c.Files[key]; ok {
-		delete(c.Files, key)
-		file.ReturnToPool()
-		c.TotalCount--
-	}
-}
-
 func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	numWorkers := cfg.CPUWorker
-	filesChan := make(chan string, numWorkers*2)
+	filesChan := make(chan string, cfg.CPUWorker)
 
 	var wg sync.WaitGroup
 
@@ -83,10 +32,8 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string) {
 	for i := uint8(0); i <= numWorkers; i++ {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-
 			for path := range filesChan {
 				c.processFile(path)
 			}
@@ -102,7 +49,7 @@ func (c *FileCache) processFile(path string) {
 	}
 
 	if !info.IsDir() {
-		etag, err := getFileMD5Hash(path, files.ChunkSize)
+		etag, err := getHash(path)
 		if err != nil {
 			fmt.Printf("Error calculating ETag for file %s: %s\n", path, err.Error())
 			return
@@ -128,54 +75,52 @@ func (c *FileCache) walkDir(dir string, filesChan chan string) error {
 	})
 }
 
-func getFileMD5Hash(filePath string, partSize int64) (string, error) {
-	file, err := os.OpenFile(filePath, os.O_RDONLY, 0755)
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 8196)
+		return &b
+	},
+}
+
+func getHash(filePath string) (string, error) {
+	file, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
-	info, err := file.Stat()
+	fileInfo, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
 
-	size := info.Size()
+	fileSize := fileInfo.Size()
 
-	var md5Digest [][]byte
+	buf := bufPool.Get().(*[]byte)
+	defer bufPool.Put(buf)
 
-	for {
-		bufferSize := partSize
-		if size < partSize {
-			bufferSize = size
-		}
+	if fileSize <= files.ChunkSize {
+		hash := md5.New()
 
-		chunk := make([]byte, bufferSize)
-
-		n, err := file.Read(chunk)
-		if err != nil && !errors.Is(err, io.EOF) {
+		if _, err := io.CopyBuffer(hash, file, *buf); err != nil {
 			return "", err
 		}
-		if n == 0 {
-			break
+
+		return hex.EncodeToString(hash.Sum(nil)), nil
+	}
+
+	parts := fileSize / files.ChunkSize
+	if fileSize%files.ChunkSize != 0 {
+		parts++
+	}
+	finalHash := md5.New()
+	for i := int64(0); i < parts; i++ {
+		partReader := io.NewSectionReader(file, i*files.ChunkSize, files.ChunkSize)
+		partHash := md5.New()
+		if _, err := io.CopyBuffer(partHash, partReader, *buf); err != nil {
+			return "", err
 		}
-
-		hash := md5.Sum(chunk[:n])
-		md5Digest = append(md5Digest, hash[:])
-		size -= int64(n)
+		finalHash.Write(partHash.Sum(nil))
 	}
-
-	if len(md5Digest) == 1 {
-		return hex.EncodeToString(md5Digest[0]), nil
-	}
-
-	var finalMD5 []byte
-
-	for _, digest := range md5Digest {
-		finalMD5 = append(finalMD5, digest...)
-	}
-
-	hash := md5.Sum(finalMD5)
-
-	return hex.EncodeToString(hash[:]) + "-" + strconv.Itoa(len(md5Digest)), nil
+	return hex.EncodeToString(finalHash.Sum(nil)) + "-" + strconv.FormatInt(parts, 10), nil
 }

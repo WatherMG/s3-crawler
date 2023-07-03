@@ -98,9 +98,10 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 
 	c.waitForCompletion()
 	close(data.Objects)
+	data.SetCount(len(data.Objects))
 
 	log.Printf("ListObjects: elapsed: %s\n", time.Since(start))
-	log.Printf("ListObjects: Files not in cache, need download: %d\n", len(data.Objects))
+	log.Printf("ListObjects: Files need to download: %d\n", data.Count())
 
 	return nil
 }
@@ -112,7 +113,7 @@ func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *ca
 func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
 	for i := uint8(0); i < c.cfg.CPUWorker; i++ {
 		c.wg.Add(1)
-		go func() {
+		go func(ctx context.Context, cache *cacher.FileCache) {
 			defer c.wg.Done()
 			for object := range c.objectsChan {
 				select {
@@ -120,18 +121,22 @@ func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, 
 					close(data.Objects)
 					return
 				default:
-					name := *object.Key
+					name := strings.ReplaceAll(*object.Key, "/", "_")
 					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
-						file := files.NewFileFromObject(object)
-						cached := cache.HasFile(file)
-						if !cached {
+						etag := strings.Trim(*object.ETag, "\"")
+						downloaded := cache.HasFile(name, etag, object.Size)
+
+						if !downloaded {
+							file := files.NewFileFromObject(object)
 							data.Objects <- file
+
 						}
+
 						cache.RemoveFile(name)
 					}
 				}
 			}
-		}()
+		}(ctx, cache)
 	}
 }
 
