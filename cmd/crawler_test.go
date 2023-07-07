@@ -13,7 +13,7 @@ import (
 )
 
 func TestListObjects(t *testing.T) {
-	const fileCount = 12945 // in bucket
+	const fileCount = 253 // in bucket
 
 	cfg, _ := configuration.LoadConfig("../config.json")
 	client, _ := s3client.NewClient(context.Background(), cfg)
@@ -28,14 +28,14 @@ func TestListObjects(t *testing.T) {
 			t.Errorf("ListObjects error: %v", err)
 		}
 
-		if len(data.Objects) != fileCount {
-			t.Errorf("Expected 253 files, got %d", len(data.Objects))
+		if len(data.DownloadChan) != fileCount {
+			t.Errorf("Expected 253 files, got %d", len(data.DownloadChan))
 		}
 
-		for len(data.Objects) != 0 {
-			<-data.Objects
+		for len(data.DownloadChan) != 0 {
+			<-data.DownloadChan
 		}
-		log.Printf("Reset data. Len of objects in channel %d\n", len(data.Objects))
+		log.Printf("Reset data. Len of objects in channel %d\n", len(data.DownloadChan))
 
 		client.PagesCount = 0
 	}

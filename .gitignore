@@ -109,3 +109,6 @@ go.work
 /.localstack*
 /build*
 /s3_data*
+.prof
+.out
+.txt

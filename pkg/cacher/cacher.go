@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 )
 
 func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
-	numWorkers := cfg.CPUWorker
-	filesChan := make(chan string, cfg.CPUWorker)
+	start := time.Now()
+	numWorkers := cfg.NumCPU
+	filesChan := make(chan string, cfg.NumCPU)
 
 	var wg sync.WaitGroup
 
@@ -25,6 +28,9 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	err := c.walkDir(cfg.LocalPath, filesChan)
 	close(filesChan)
 	wg.Wait()
+
+	log.Printf("Cache loaded from %s\n", time.Since(start))
+	log.Printf("Total files in cache: %d\n", c.totalCount)
 
 	return err
 }
@@ -77,7 +83,7 @@ func (c *FileCache) walkDir(dir string, filesChan chan string) error {
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, 8196)
+		b := make([]byte, files.Buffer8KB)
 		return &b
 	},
 }

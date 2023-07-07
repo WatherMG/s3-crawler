@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"runtime/pprof"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 )
 
 func main() {
-	/*f, err := os.Create("mem.prof")
+	f, err := os.Create("mem.prof")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -35,11 +37,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer trace.Stop()*/
+	defer trace.Stop()
 
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // TODO: add timeout to config
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // TODO: add timeout to config
 	defer cancel()
 
 	cfg, err := configuration.LoadConfig("../config.json") // TODO: add config path to config
@@ -47,39 +49,37 @@ func main() {
 		log.Fatal(err)
 	}
 
-	runtime.GOMAXPROCS(int(cfg.CPUWorker))
-
 	if err = createPath(cfg.LocalPath); err != nil {
 		log.Fatal(err)
 	}
 
+	defer os.RemoveAll(cfg.LocalPath)
+
 	cache := cacher.NewCache()
-
-	start := time.Now()
-
 	if err = cache.LoadFromDir(cfg); err != nil {
 		log.Fatal(err)
 	}
-
-	log.Printf("Cache loaded from %s\n", time.Since(start))
-	log.Printf("Total files in cache: %d\n", cache.TotalCount)
 
 	client, err := s3client.NewClient(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
+	manager := downloader.NewDownloader(client, cfg)
+
+	runtime.GOMAXPROCS(int(cfg.NumCPU))
+
+	data := files.NewObject(cfg.Pagination.MaxKeys * 10)
 
 	if err = client.CheckBucket(ctx); err != nil {
 		log.Fatal(err)
 	}
 
-	data := files.NewObject(uint32(cfg.Downloaders))
-
-	manager := downloader.NewDownloader(client, cfg)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		manager.DownloadFiles(ctx, data)
+		if err = manager.DownloadFiles(ctx, data); err != nil {
+			log.Println(err)
+		}
 	}()
 
 	if err = client.ListObjects(ctx, data, cache); err != nil {
@@ -89,15 +89,14 @@ func main() {
 	cache.Clear()
 
 	wg.Wait()
-	/*memstat(data)
+	memstat(data)
 	fmt.Printf("Programm running total %s", time.Since(runTime))
-	fmt.Scanln()
 	runtime.GC() // get up-to-date statistics
-	pprof.WriteHeapProfile(f)*/
+	pprof.WriteHeapProfile(f)
 }
 
 func createPath(path string) error {
-	err := os.MkdirAll(path, 0644)
+	err := os.MkdirAll(path, 0755)
 	if err != nil {
 		log.Printf("MkdirAll error: %v", err)
 	}
@@ -112,11 +111,11 @@ func memstat(data *files.Objects) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "------------------------------------\nMem for file Pool in listobjects\n")
-	fmt.Fprintf(f, "With %d objects in bucket\n", len(data.Objects))
+	fmt.Fprintf(f, "With %d objects in bucket\n", len(data.DownloadChan))
 
-	fmt.Fprintf(f, "Alloc = %v MiB\n", m.Alloc/1024/1024)
-	fmt.Fprintf(f, "TotalAlloc = %v MiB\n", m.TotalAlloc/1024/1024)
-	fmt.Fprintf(f, "Sys = %v MiB\n", m.Sys/1024/1024)
+	fmt.Fprintf(f, "Alloc = %v MiB\n", m.Alloc/files.MiB)
+	fmt.Fprintf(f, "TotalAlloc = %v MiB\n", m.TotalAlloc/files.MiB)
+	fmt.Fprintf(f, "Sys = %v MiB\n", m.Sys/files.MiB)
 	fmt.Fprintf(f, "NumGC = %v\n", m.NumGC)
 }
 
@@ -128,7 +127,7 @@ func memstat(data *files.Objects) {
 	}
 
 	// Set GOMAXPROCS
-	runtime.GOMAXPROCS(int(cfg.CPUWorker))
+	runtime.GOMAXPROCS(int(cfg.NumCPU))
 
 	// Create local path if it doesn't exist
 	if err = createPath(cfg.LocalPath); err != nil {
@@ -144,7 +143,7 @@ func memstat(data *files.Objects) {
 		log.Fatal(err)
 	}
 	log.Printf("Cache loaded from %s\n", time.Since(start))
-	log.Printf("Total files in cache: %d\n", cache.TotalCount)
+	log.Printf("Total files in cache: %d\n", cache.totalCount)
 
 	// Create a new S3 client
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -159,7 +158,7 @@ func memstat(data *files.Objects) {
 		log.Fatal(err)
 	}
 
-	// Create a new Objects structure
+	// Create a new DownloadChan structure
 	data := files.NewObject(uint32(cfg.Downloaders))
 
 	// Start downloading files
@@ -178,7 +177,7 @@ func memstat(data *files.Objects) {
 
 	// Clear the cache
 	cache.Clear()
-	log.Printf("Total files in cache: %d\n", cache.TotalCount)
+	log.Printf("Total files in cache: %d\n", cache.totalCount)
 
 	wg.Wait()
 }

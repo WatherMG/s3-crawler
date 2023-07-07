@@ -13,10 +13,10 @@ type Configuration struct {
 	Prefix       string             `json:"s3prefix,omitempty"`
 	Extension    string             `json:"extension,omitempty"`
 	NameMask     string             `json:"nameMask,omitempty"`
-	LocalPath    string             `json:"localPath"`
+	LocalPath    string             `json:"downloadPath"`
 	Pagination   PaginationConfig   `json:"pagination"`
 	Downloaders  uint16             `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
-	CPUWorker    uint8              `json:"cpuWorker,omitempty"`   // - отвечает за распределение нагрузки на ядра процессора
+	NumCPU       uint8              `json:"numCPU,omitempty"`      // - отвечает за распределение нагрузки на ядра процессора
 	Compression  bool               `json:"compression,omitempty"`
 }
 
@@ -42,6 +42,12 @@ func LoadConfig(filename string) (*Configuration, error) {
 	cfg := &Configuration{}
 	if err = json.Unmarshal(file, &cfg); err != nil {
 		return nil, err
+	}
+	if cfg.LocalPath == "" {
+		cfg.LocalPath = "/tmp/crawler/"
+	}
+	if cfg.Pagination.MaxKeys <= 0 {
+		cfg.Pagination.MaxKeys = 1000
 	}
 
 	log.Printf("Load config, elapsed: %s", time.Since(start))

@@ -8,7 +8,7 @@ import (
 
 type FileCache struct {
 	Files      map[string]*files.File
-	TotalCount int
+	totalCount uint32
 	mu         sync.Mutex
 }
 
@@ -30,11 +30,12 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Files[key] = info
-	c.TotalCount++
+	c.totalCount++
 }
 
 func (c *FileCache) HasFile(key, etag string, size int64) bool {
 	c.mu.Lock()
+	defer c.RemoveFile(key)
 	defer c.mu.Unlock()
 
 	cachedInfo, ok := c.Files[key]
@@ -49,7 +50,7 @@ func (c *FileCache) RemoveFile(key string) {
 	if file, ok := c.Files[key]; ok {
 		file.ReturnToPool()
 		delete(c.Files, key)
-		c.TotalCount--
+		c.totalCount--
 	}
 }
 
@@ -62,5 +63,5 @@ func (c *FileCache) Clear() {
 		delete(c.Files, key)
 	}
 
-	c.TotalCount = 0
+	c.totalCount = 0
 }

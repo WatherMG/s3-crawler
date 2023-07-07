@@ -2,9 +2,12 @@ package s3client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"s3-crawler/pkg/cacher"
@@ -21,11 +24,11 @@ import (
 // Client represents an S3 client.
 type Client struct {
 	*s3.Client
-	cfg         *configuration.Configuration // Configuration for the S3 client.
-	input       *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
-	wg          *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
-	objectsChan chan types.Object            // Channel to send objects to be processed.
-	PagesCount  int32                        // Number of pages processed by the paginator.
+	cfg          *configuration.Configuration // Configuration for the S3 client.
+	input        *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
+	wg           *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
+	PagesCount   uint32                       // Number of pages processed by the paginator.
+	acceleration bool
 }
 
 var s3Client *Client
@@ -36,7 +39,6 @@ var once sync.Once
 // Singleton pattern.
 func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, error) {
 	var err error
-
 	once.Do(func() {
 		s3Client = &Client{
 			cfg: cfg,
@@ -64,7 +66,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 			config.WithRegion(cfg.S3Connection.Region), // The region to use for the S3 service.
 		)
 		if err != nil {
-			return
+			log.Fatal(err)
 		}
 		s3Client.Client = s3.NewFromConfig(defaultConfig)
 	})
@@ -73,111 +75,86 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 }
 
 // CheckBucket checks if the bucket specified in the configuration exists and is accessible.
-func (c *Client) CheckBucket(ctx context.Context) error {
-	input := &s3.HeadBucketInput{
-		Bucket: aws.String(c.cfg.BucketName),
+func (client *Client) CheckBucket(ctx context.Context) error {
+	if client.cfg.BucketName == "" {
+		return errors.New("s3.CheckBucket: bucketName is required")
 	}
-	log.Printf("Bucket name: %s", *input.Bucket)
-	_, err := c.HeadBucket(ctx, input)
+	input := &s3.HeadBucketInput{
+		Bucket: aws.String(client.cfg.BucketName),
+	}
 
+	_, err := client.HeadBucket(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to get bucket, %w", err)
+	}
+
+	log.Printf("Bucket exist: %s", client.cfg.BucketName)
+
+	resp, err := client.GetBucketAccelerateConfiguration(ctx, &s3.GetBucketAccelerateConfigurationInput{Bucket: aws.String(client.cfg.BucketName)})
+	if err != nil {
+		return fmt.Errorf("failed to get bucket accelerate configuration, %w", err)
+	}
+
+	if resp.Status == types.BucketAccelerateStatusEnabled {
+		client.acceleration = true
+		log.Println("Transfer Acceleration is enabled on the bucket.")
+	} else {
+		client.acceleration = false
+		log.Println("Transfer Acceleration is not enabled on the bucket.")
+	}
 	return err
 }
 
 // ListObjects lists objects from the bucket specified in the configuration and
 // sends them to be processed.
-func (c *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
+func (client *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	start := time.Now()
-	paginator := s3.NewListObjectsV2Paginator(c, c.input)
-	c.objectsChan = make(chan types.Object, c.cfg.CPUWorker*2)
-
-	c.startObjectProcessor(ctx, data, cache)
-
-	if err := c.processPages(ctx, paginator); err != nil {
+	if err := client.processPages(ctx, data, cache); err != nil {
 		return err
 	}
-
-	c.waitForCompletion()
-	close(data.Objects)
-	data.SetCount(len(data.Objects))
-
-	log.Printf("ListObjects: elapsed: %s\n", time.Since(start))
-	log.Printf("ListObjects: Files need to download: %d\n", data.Count())
-
+	fmt.Printf("ListObjects: recive all objects in bucket. Need download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
 	return nil
 }
 
-// startObjectProcessor starts workers that process items sent through the
-// objectsChan channel. Workers check if an item is already in the cache and if
-// not, they send it to be downloaded. They also remove downloaded files from the
-// cache.
-func (c *Client) startObjectProcessor(ctx context.Context, data *files.Objects, cache *cacher.FileCache) {
-	for i := uint8(0); i < c.cfg.CPUWorker; i++ {
-		c.wg.Add(1)
-		go func(ctx context.Context, cache *cacher.FileCache) {
-			defer c.wg.Done()
-			for object := range c.objectsChan {
-				select {
-				case <-ctx.Done():
-					close(data.Objects)
-					return
-				default:
-					name := strings.ReplaceAll(*object.Key, "/", "_")
-					if strings.HasSuffix(name, c.cfg.Extension) && strings.Contains(name, c.cfg.NameMask) {
-						etag := strings.Trim(*object.ETag, "\"")
-						downloaded := cache.HasFile(name, etag, object.Size)
-
-						if !downloaded {
-							file := files.NewFileFromObject(object)
-							data.Objects <- file
-
-						}
-
-						cache.RemoveFile(name)
-					}
-				}
-			}
-		}(ctx, cache)
-	}
-}
-
 // processPages processes pages of results returned by the paginator and sends items to be processed.
-func (c *Client) processPages(ctx context.Context, paginator *s3.ListObjectsV2Paginator) error {
-	var totalObjects int
+func (client *Client) processPages(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
+	paginator := s3.NewListObjectsV2Paginator(client, client.input, func(o *s3.ListObjectsV2PaginatorOptions) {
+		o.StopOnDuplicateToken = true
+	})
 
 	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+		page, err := paginator.NextPage(ctx, func(o *s3.Options) {
+			o.UseAccelerate = client.acceleration
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("paginator error: %w", err)
 		}
 
-		if err = c.sendObjectsToChannel(ctx, page.Contents); err != nil {
-			return err
-		}
+		go client.sendObjectsToChannel(page.Contents, data, cache)
 
-		c.PagesCount++
-
-		totalObjects += len(page.Contents)
-		log.Printf("ProcessPages: Page %d. %d objects recived from s3 and sent to channel\n", c.PagesCount, totalObjects)
+		atomic.AddUint32(&client.PagesCount, 1)
 	}
+
+	close(data.DownloadChan)
+
 	return nil
 }
 
 // sendObjectsToChannel sends items to be processed through the objectsChan channel.
-func (c *Client) sendObjectsToChannel(ctx context.Context, objects []types.Object) error {
+func (client *Client) sendObjectsToChannel(objects []types.Object, data *files.Objects, cache *cacher.FileCache) {
 	for _, object := range objects {
-		select {
-		case c.objectsChan <- object:
-		case <-ctx.Done():
-			close(c.objectsChan)
-			return ctx.Err()
+		name := strings.ReplaceAll(*object.Key, "/", "_")
+		if strings.HasSuffix(name, client.cfg.Extension) && strings.Contains(name, client.cfg.NameMask) {
+			etag := strings.Trim(*object.ETag, "\"")
+			downloaded := cache.HasFile(name, etag, object.Size)
+			if !downloaded {
+				data.AddFile(object)
+			}
+			// cache.RemoveFile(name)
 		}
 	}
-
-	return nil
 }
 
-// waitForCompletion waits for all goroutines to finish processing items.
-func (c *Client) waitForCompletion() {
-	close(c.objectsChan)
-	c.wg.Wait()
+func (client *Client) GetPagesCount() uint32 {
+	return atomic.LoadUint32(&client.PagesCount)
 }

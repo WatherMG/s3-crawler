@@ -3,64 +3,68 @@ package downloader
 import (
 	"context"
 	"os"
-	"path/filepath"
-	"strings"
-	"sync"
 
-	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
-	"s3-crawler/pkg/s3client"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type Downloader struct {
-	cfg     *configuration.Configuration
-	manager *manager.Downloader
-	client  *s3client.Client
-	wg      sync.WaitGroup
-}
+func (downloader *Downloader) DownloadFileCustom(ctx context.Context, file *files.File, f *os.File) (int64, error) {
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(downloader.cfg.BucketName),
+		Key:    aws.String(file.Key),
+	}
 
-var downloader *Downloader
-var once sync.Once
+	concurrency := file.Size / files.ChunkSize
+	if file.Size <= files.ChunkSize {
+		concurrency = 0
+	}
+	if file.Size%files.ChunkSize != 0 {
+		concurrency++
+	}
 
-func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *Downloader {
-	once.Do(func() {
-		downloader = &Downloader{
-			manager: manager.NewDownloader(client, func(d *manager.Downloader) {
-				d.LogInterruptedDownloads = true
-				d.PartSize = files.ChunkSize
-			}),
-			client: client,
-			cfg:    cfg,
-		}
+	d := manager.NewDownloader(downloader.client, func(d *manager.Downloader) {
+		d.LogInterruptedDownloads = true
+		d.PartSize = file.Size / concurrency
+		d.Concurrency = int(concurrency)
+		d.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(1 << 13)
 	})
 
-	return downloader
-}
-
-func (d *Downloader) DownloadFile(ctx context.Context, object *files.File) (int64, error) {
-	input := &s3.GetObjectInput{
-		Bucket: aws.String(d.cfg.BucketName),
-		Key:    aws.String(object.Key),
-	}
-
-	fileName := strings.ReplaceAll(object.Key, "/", "_")
-
-	path := filepath.Join(d.cfg.LocalPath, fileName)
-	if d.cfg.Prefix != "" {
-		path = filepath.Join(d.cfg.LocalPath, d.cfg.Prefix+"_"+fileName)
-	}
-
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0755)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	numBytes, err := d.manager.Download(ctx, file, input)
+	numBytes, err := d.Download(ctx, f, input)
 
 	return numBytes, err
 }
+
+/*func (downloader *Downloader) DownloadFileCustom2(ctx context.Context, file *files.File, startByte, endByte int64) (int64, error) {
+	var input *s3.GetObjectInput
+
+	// parts := file.Size / files.ChunkSize
+	if file.Size <= files.ChunkSize {
+		input = &s3.GetObjectInput{
+			Bucket: aws.String(downloader.cfg.BucketName),
+			Key:    aws.String(file.Key),
+		}
+	}
+	if file.Size%files.ChunkSize != 0 {
+		input = &s3.GetObjectInput{
+			Bucket: aws.String(downloader.cfg.BucketName),
+			Key:    aws.String(file.Key),
+			Range:  aws.String(fmt.Sprintf("bytes=%d-%d", startByte, endByte)),
+		}
+	}
+
+	resp, err := downloader.client.GetObject(ctx, input)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	n, err := io.CopyN(file.Data, resp.Body, file.Size)
+	if err != nil {
+		return 0, err
+	}
+
+	return n, err
+}*/

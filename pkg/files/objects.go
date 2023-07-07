@@ -2,69 +2,63 @@ package files
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // Objects represents a collection of File objects.
 type Objects struct {
-	sync.Mutex            // Mutex is used to synchronize access to shared resources.
-	totalBytes int64      // totalBytes is the total number of bytes in the Objects collection.
-	Objects    chan *File // Objects is a channel of File objects.
-	count      int        // count is the current count of objects in the Objects collection.
+	DownloadChan chan *File // DownloadChan is a channel of File objects.
+	totalBytes   int64      // totalBytes is the total number of bytes in the DownloadChan collection.
+	count        uint32     // count is the current count of objects in the DownloadChan collection.
+	progress     int64
+	mu           sync.Mutex
 }
 
-var objects *Objects // objects is a pointer to the singleton instance of the Objects structure.
-var once sync.Once   // once is used to synchronize and ensure that objects initialization happens only once.
-
 // NewObject returns the singleton objects of the Objects structure.
-func NewObject(capacity uint32) *Objects {
+func NewObject(capacity uint16) *Objects {
+	var objects *Objects // objects is a pointer to the singleton instance of the DownloadChan structure.
+	var once sync.Once   // once is used to synchronize and ensure that objects initialization happens only once.
+
 	once.Do(func() {
 		objects = &Objects{
-			Objects:    make(chan *File, capacity),
-			totalBytes: 0,
-			count:      0,
+			DownloadChan: make(chan *File, capacity),
 		}
 	})
 
 	return objects
 }
 
-// GetTotalBytes returns the total number of bytes in the Objects collection in MiB.
-func (o *Objects) GetTotalBytes() float64 {
-	return float64(o.totalBytes) / MiB
+func (objects *Objects) AddFile(object types.Object) {
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	file := NewFileFromObject(object)
+	objects.DownloadChan <- file
+
+	objects.totalBytes += file.Size
+	objects.count++
 }
 
-// GetAverageSpeed returns the average speed of the Objects collection in MiB/s.
-func (o *Objects) GetAverageSpeed(duration time.Duration) float64 {
-	return (float64(o.totalBytes) / duration.Seconds()) / MiB
+func (objects *Objects) GetStats(duration time.Duration) (count uint32, bytesInMiB, averageSpeed, progress, remainMBToDownload float64) {
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	count = objects.count
+	bytesInMiB = float64(objects.totalBytes) / MiB
+	progress = float64(objects.progress) / MiB
+	remainMBToDownload = bytesInMiB - progress
+	averageSpeed = progress / duration.Seconds()
+	return
 }
 
-// AddBytes adds the given number of bytes to the total number of bytes in the Objects collection.
-func (o *Objects) AddBytes(bytes int64) {
-	atomic.AddInt64(&o.totalBytes, bytes)
+func (objects *Objects) SetProgress(progress int64) {
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	objects.progress += progress
 }
 
-// Size returns the total number of bytes in the Objects collection.
-func (o *Objects) Size() int64 {
-	return o.totalBytes
-}
-
-// ResetBytes resets the total number of bytes in the Objects collection to zero.
-func (o *Objects) ResetBytes() {
-	o.Lock()
-	defer o.Unlock()
-	o.totalBytes = 0
-}
-
-// Count returns the current count of objects in the Objects collection.
-func (o *Objects) Count() int {
-	return o.count
-}
-
-// SetCount sets the current count of objects in the Objects collection to the given value.
-func (o *Objects) SetCount(count int) {
-	o.Lock()
-	defer o.Unlock()
-	o.count = count
+func (objects *Objects) Count() uint32 {
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	return objects.count
 }

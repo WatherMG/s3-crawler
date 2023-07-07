@@ -4,12 +4,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 const (
-	MiB       = 1024 * 1024 // MiB is a constant representing the number of bytes in a mebibyte.
-	ChunkSize = 8 * MiB     // Используется для корректного разбиения на чанки для составления хеша локального файла, такой размер используется при aws s3 cp s3:// или aws s3 sync, и от размера чанка рассчитывается хеш на s3 бакете
+	MiB       = 1 << 20 // MiB is a constant representing the number of bytes in a mebibyte.
+	KiB       = 1 << 10
+	ChunkSize = MiB << 3 // Используется для корректного разбиения на чанки для составления хеша локального файла, такой размер используется при aws s3 cp s3:// или aws s3 sync, и от размера чанка рассчитывается хеш на s3 бакете
+	Buffer8KB = KiB << 3
 )
 
 // File represents a file with a Key, Size, and ETag.
@@ -18,7 +21,7 @@ type File struct {
 	Name string // Name is the name of the file.
 	ETag string // ETag is the ETag of the file.
 	Size int64  // Size is the size of the file in bytes.
-	Data []byte
+	Data *manager.WriteAtBuffer
 }
 
 // filePool is a pool of File objects for reuse.
