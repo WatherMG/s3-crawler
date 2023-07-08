@@ -5,19 +5,23 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"s3-crawler/pkg/files"
 )
 
 type Configuration struct {
-	S3Connection S3ConnectionConfig `json:"s3Connection"`
-	BucketName   string             `json:"bucketName"`
-	Prefix       string             `json:"s3prefix,omitempty"`
-	Extension    string             `json:"extension,omitempty"`
-	NameMask     string             `json:"nameMask,omitempty"`
-	LocalPath    string             `json:"downloadPath"`
-	Pagination   PaginationConfig   `json:"pagination"`
-	Downloaders  uint16             `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
-	NumCPU       uint8              `json:"numCPU,omitempty"`      // - отвечает за распределение нагрузки на ядра процессора
-	Compression  bool               `json:"compression,omitempty"`
+	S3Connection  S3ConnectionConfig `json:"s3Connection"`
+	BucketName    string             `json:"bucketName"`
+	Prefix        string             `json:"s3prefix,omitempty"`
+	Extension     string             `json:"extension,omitempty"`
+	NameMask      string             `json:"nameMask,omitempty"`
+	LocalPath     string             `json:"downloadPath"`
+	Pagination    PaginationConfig   `json:"pagination"`
+	Downloaders   uint16             `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
+	NumCPU        uint8              `json:"numCPU,omitempty"`      // - отвечает за распределение нагрузки на ядра процессора
+	Compression   bool               `json:"compression,omitempty"`
+	HashWithParts bool               `json:"withParts"`
+	MinFileSize   int64              `json:"minFileSizeMB,omitempty"`
 }
 
 type S3ConnectionConfig struct {
@@ -53,4 +57,11 @@ func LoadConfig(filename string) (*Configuration, error) {
 	log.Printf("Load config, elapsed: %s", time.Since(start))
 
 	return cfg, err
+}
+
+func (config *Configuration) GetMinFileSize() int64 {
+	if config.MinFileSize > 0 {
+		return config.MinFileSize * files.MiB
+	}
+	return 0
 }

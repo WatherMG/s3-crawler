@@ -28,15 +28,15 @@ func TestListObjects(t *testing.T) {
 			t.Errorf("ListObjects error: %v", err)
 		}
 
-		if len(data.DownloadChan) != fileCount {
-			t.Errorf("Expected 253 files, got %d", len(data.DownloadChan))
+		if len(data.ProcessedChan) != fileCount {
+			t.Errorf("Expected 253 files, got %d", len(data.ProcessedChan))
 		}
 
-		for len(data.DownloadChan) != 0 {
-			<-data.DownloadChan
+		for len(data.ProcessedChan) != 0 {
+			<-data.ProcessedChan
 		}
-		log.Printf("Reset data. Len of objects in channel %d\n", len(data.DownloadChan))
+		log.Printf("Reset data. Len of objects in channel %d\n", len(data.ProcessedChan))
 
-		client.PagesCount = 0
+		client.GetPagesCount()
 	}
 }

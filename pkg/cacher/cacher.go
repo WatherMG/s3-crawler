@@ -23,20 +23,21 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	filesChan := make(chan string, cfg.NumCPU)
 
 	var wg sync.WaitGroup
+	c.withParts = cfg.HashWithParts
 
 	c.startWorkers(numWorkers, &wg, filesChan)
 	err := c.walkDir(cfg.LocalPath, filesChan)
 	close(filesChan)
 	wg.Wait()
 
-	log.Printf("Cache loaded from %s\n", time.Since(start))
-	log.Printf("Total files in cache: %d\n", c.totalCount)
+	log.Printf("Cache loaded from %s.\n", time.Since(start))
+	log.Printf("Total files in cache: %d. Total size %d MB.\n", c.totalCount, c.TotalSize/files.MiB)
 
 	return err
 }
 
 func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string) {
-	for i := uint8(0); i <= numWorkers; i++ {
+	for i := uint8(0); i <= numWorkers*2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -55,7 +56,7 @@ func (c *FileCache) processFile(path string) {
 	}
 
 	if !info.IsDir() {
-		etag, err := getHash(path)
+		etag, err := getHash(path, c.withParts)
 		if err != nil {
 			fmt.Printf("Error calculating ETag for file %s: %s\n", path, err.Error())
 			return
@@ -66,6 +67,7 @@ func (c *FileCache) processFile(path string) {
 		file.ETag = etag
 		file.Size = info.Size()
 		c.AddFile(info.Name(), file)
+		c.TotalSize += file.Size
 	}
 }
 
@@ -83,12 +85,12 @@ func (c *FileCache) walkDir(dir string, filesChan chan string) error {
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, files.Buffer8KB)
+		b := make([]byte, files.Buffer64KB)
 		return &b
 	},
 }
 
-func getHash(filePath string) (string, error) {
+func getHash(filePath string, withParts bool) (string, error) {
 	file, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return "", err
@@ -105,7 +107,7 @@ func getHash(filePath string) (string, error) {
 	buf := bufPool.Get().(*[]byte)
 	defer bufPool.Put(buf)
 
-	if fileSize <= files.ChunkSize {
+	if !withParts || fileSize <= files.ChunkSize {
 		hash := md5.New()
 
 		if _, err := io.CopyBuffer(hash, file, *buf); err != nil {

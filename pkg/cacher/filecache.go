@@ -10,6 +10,8 @@ type FileCache struct {
 	Files      map[string]*files.File
 	totalCount uint32
 	mu         sync.Mutex
+	withParts  bool
+	TotalSize  int64
 }
 
 var fileCache *FileCache // fileCache is a pointer to the singleton instance of the FileCache structure.
@@ -35,7 +37,6 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 
 func (c *FileCache) HasFile(key, etag string, size int64) bool {
 	c.mu.Lock()
-	defer c.RemoveFile(key)
 	defer c.mu.Unlock()
 
 	cachedInfo, ok := c.Files[key]

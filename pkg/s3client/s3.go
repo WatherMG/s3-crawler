@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"s3-crawler/pkg/cacher"
@@ -27,7 +26,7 @@ type Client struct {
 	cfg          *configuration.Configuration // Configuration for the S3 client.
 	input        *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
 	wg           *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
-	PagesCount   uint32                       // Number of pages processed by the paginator.
+	pagesCount   uint32                       // Number of pages processed by the paginator.
 	acceleration bool
 }
 
@@ -112,7 +111,7 @@ func (client *Client) ListObjects(ctx context.Context, data *files.Objects, cach
 	if err := client.processPages(ctx, data, cache); err != nil {
 		return err
 	}
-	fmt.Printf("ListObjects: recive all objects in bucket. Need download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
+	fmt.Printf("\u001B[2K\nListObjects: recive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
 	return nil
 }
 
@@ -120,6 +119,10 @@ func (client *Client) ListObjects(ctx context.Context, data *files.Objects, cach
 func (client *Client) processPages(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
 	paginator := s3.NewListObjectsV2Paginator(client, client.input, func(o *s3.ListObjectsV2PaginatorOptions) {
 		o.StopOnDuplicateToken = true
+	})
+
+	pool := NewWorkerPool(int(client.cfg.Pagination.MaxKeys), func(object types.Object) {
+		client.sendObjectsToChannel(object, data, cache)
 	})
 
 	for paginator.HasMorePages() {
@@ -130,31 +133,31 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 			return fmt.Errorf("paginator error: %w", err)
 		}
 
-		go client.sendObjectsToChannel(page.Contents, data, cache)
+		for _, object := range page.Contents {
+			pool.AddFileFromObject(object)
+		}
 
-		atomic.AddUint32(&client.PagesCount, 1)
+		client.pagesCount++
 	}
-
-	close(data.DownloadChan)
-
+	pool.Wait()
+	close(data.ProcessedChan)
 	return nil
 }
 
 // sendObjectsToChannel sends items to be processed through the objectsChan channel.
-func (client *Client) sendObjectsToChannel(objects []types.Object, data *files.Objects, cache *cacher.FileCache) {
-	for _, object := range objects {
-		name := strings.ReplaceAll(*object.Key, "/", "_")
-		if strings.HasSuffix(name, client.cfg.Extension) && strings.Contains(name, client.cfg.NameMask) {
-			etag := strings.Trim(*object.ETag, "\"")
-			downloaded := cache.HasFile(name, etag, object.Size)
-			if !downloaded {
-				data.AddFile(object)
-			}
-			// cache.RemoveFile(name)
+func (client *Client) sendObjectsToChannel(object types.Object, data *files.Objects, cache *cacher.FileCache) {
+	name := strings.ReplaceAll(*object.Key, "/", "_")
+	if strings.HasSuffix(name, client.cfg.Extension) && strings.Contains(name, client.cfg.NameMask) && object.Size >= client.cfg.GetMinFileSize() {
+		etag := strings.Trim(*object.ETag, "\"")
+		downloaded := cache.HasFile(name, etag, object.Size)
+		if !downloaded {
+			file := files.NewFileFromObject(object)
+			data.AddFile(file)
 		}
+		cache.RemoveFile(name)
 	}
 }
 
 func (client *Client) GetPagesCount() uint32 {
-	return atomic.LoadUint32(&client.PagesCount)
+	return client.pagesCount
 }
