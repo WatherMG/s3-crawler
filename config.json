@@ -1,0 +1,20 @@
+{
+  "s3Connection": {
+    "endpoint": "",
+    "region": "",
+    "accessKeyId": "",
+    "secretAccessKey": ""
+  },
+  "bucketName": "",
+  "s3prefix": "",
+  "extension": "",
+  "nameMask": "",
+  "minFileSizeMB": 0,
+  "pagination": {
+    "maxKeys": 1000
+  },
+  "NumCPU": 16,
+  "compression": false,
+  "withParts": false ,
+  "downloadPath": "/tmp/upload/data"
+}
