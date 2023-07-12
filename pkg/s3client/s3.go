@@ -28,6 +28,8 @@ type Client struct {
 	wg           *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
 	pagesCount   uint32                       // Number of pages processed by the paginator.
 	acceleration bool
+	minSize      int64
+	maxSize      int64
 }
 
 var s3Client *Client
@@ -46,7 +48,9 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 				Prefix:  aws.String(cfg.Prefix),        // The prefix of the keys to list objects from.
 				MaxKeys: int32(cfg.Pagination.MaxKeys), // The maximum number of keys to return in each page of results.
 			},
-			wg: &sync.WaitGroup{},
+			wg:      &sync.WaitGroup{},
+			minSize: cfg.GetMinFileSize(),
+			maxSize: cfg.GetMaxFileSize(),
 		}
 		defaultConfig, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(
@@ -146,8 +150,7 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 
 // sendObjectsToChannel sends items to be processed through the objectsChan channel.
 func (client *Client) sendObjectsToChannel(object types.Object, data *files.Objects, cache *cacher.FileCache) {
-	name := strings.ReplaceAll(*object.Key, "/", "_")
-	if strings.HasSuffix(name, client.cfg.Extension) && strings.Contains(name, client.cfg.NameMask) && object.Size >= client.cfg.GetMinFileSize() {
+	if name, valid := client.isValidObject(object); valid {
 		etag := strings.Trim(*object.ETag, "\"")
 		downloaded := cache.HasFile(name, etag, object.Size)
 		if !downloaded {
@@ -156,6 +159,16 @@ func (client *Client) sendObjectsToChannel(object types.Object, data *files.Obje
 		}
 		cache.RemoveFile(name)
 	}
+}
+
+func (client *Client) isValidObject(object types.Object) (string, bool) {
+	name := strings.ReplaceAll(*object.Key, "/", "_")
+
+	hasValidExt := strings.HasSuffix(name, client.cfg.Extension)
+	hasValidName := strings.Contains(name, client.cfg.NameMask)
+	hasValidSize := (client.minSize == 0 || object.Size >= client.minSize) && (client.maxSize == 0 || object.Size <= client.maxSize)
+
+	return name, hasValidExt && hasValidName && hasValidSize
 }
 
 func (client *Client) GetPagesCount() uint32 {

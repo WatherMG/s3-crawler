@@ -37,7 +37,7 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 }
 
 func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string) {
-	for i := uint8(0); i <= numWorkers*2; i++ {
+	for i := uint8(0); i <= numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

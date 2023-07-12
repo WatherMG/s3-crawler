@@ -22,6 +22,7 @@ type Configuration struct {
 	Compression   bool               `json:"compression,omitempty"`
 	HashWithParts bool               `json:"withParts"`
 	MinFileSize   int64              `json:"minFileSizeMB,omitempty"`
+	MaxFileSize   int64              `json:"maxFileSizeMB,omitempty"`
 }
 
 type S3ConnectionConfig struct {
@@ -62,6 +63,13 @@ func LoadConfig(filename string) (*Configuration, error) {
 func (config *Configuration) GetMinFileSize() int64 {
 	if config.MinFileSize > 0 {
 		return config.MinFileSize * files.MiB
+	}
+	return 0
+}
+
+func (config *Configuration) GetMaxFileSize() int64 {
+	if config.MaxFileSize > 0 {
+		return config.MaxFileSize * files.MiB
 	}
 	return 0
 }
