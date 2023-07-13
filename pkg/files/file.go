@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
@@ -19,11 +20,13 @@ const (
 
 // File represents a file with a Key, Size, and ETag.
 type File struct {
-	Key   string // Key is the key of the file.
-	Name  string // Name is the name of the file.
-	ETag  string // ETag is the ETag of the file.
-	Size  int64  // Size is the size of the file in bytes.
-	Parts int64
+	Key         string // Key is the key of the file.
+	Name        string // Name is the name of the file.
+	ETag        string // ETag is the ETag of the file.
+	Size        int64  // Size is the size of the file in bytes.
+	Parts       int64
+	Extension   string
+	ContentType string
 }
 
 // filePool is a pool of File objects for reuse.
@@ -34,13 +37,15 @@ var filePool = sync.Pool{
 }
 
 // NewFileFromObject creates a new File objects from the given S3 object.
-func NewFileFromObject(obj types.Object) *File {
+func NewFileFromObject(obj types.Object, resp *s3.HeadObjectOutput) *File {
 	file := filePool.Get().(*File)
 	file.reset()
 	file.Key = *obj.Key
 	file.Name = strings.ReplaceAll(file.Key, "/", "_")
 	file.Size = obj.Size
 	file.ETag = strings.Trim(*obj.ETag, "\"")
+	file.ContentType = *resp.ContentType
+	file.Parts = int64(resp.PartsCount)
 
 	return file
 }

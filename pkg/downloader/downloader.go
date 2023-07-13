@@ -19,7 +19,7 @@ import (
 	"github.com/aws/smithy-go/logging"
 )
 
-const DownloadersModifier int = 1 << 6
+const DownloadersModifier int = 1<<9 + 113
 
 type Downloader struct {
 	cfg     *configuration.Configuration
@@ -47,15 +47,17 @@ func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Obj
 	start := time.Now()
 	go downloader.printProgress(ctx, data, &activeFiles, start)
 
-	for file := range data.ProcessedChan {
+	for i := 0; i < int(downloader.cfg.NumCPU)*DownloadersModifier; i++ {
 		downloader.wg.Add(1)
-		go func(file *files.File) {
+		go func() {
 			defer downloader.wg.Done()
-			if err := downloader.downloadFile(ctx, file, data, &activeFiles); err != nil {
-				log.Printf("Download error: %v", err)
-				return
+			for file := range data.ProcessedChan {
+				if err := downloader.downloadFile(ctx, file, data, &activeFiles); err != nil {
+					log.Printf("Download error: %v", err)
+					return
+				}
 			}
-		}(file)
+		}()
 	}
 
 	downloader.wg.Wait()
@@ -78,7 +80,6 @@ func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File
 
 	newDownloader := manager.NewDownloader(downloader.client, func(d *manager.Downloader) {
 		d.Logger = logging.NewStandardLogger(os.Stdout)
-		// d.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.MiB)
 	})
 
 	path := filepath.Join(downloader.cfg.LocalPath, file.Name)
@@ -96,9 +97,11 @@ func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File
 	if file.Size <= files.ChunkSize {
 		newDownloader.PartSize = file.Size
 		newDownloader.Concurrency = 1
+		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.Buffer32KB)
 	} else {
 		newDownloader.PartSize = files.ChunkSize
 		newDownloader.Concurrency = int(parts)
+		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.MiB)
 	}
 
 	numBytes, err := newDownloader.Download(ctx, destinationFile, input)

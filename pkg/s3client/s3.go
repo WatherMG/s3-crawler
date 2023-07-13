@@ -26,10 +26,13 @@ type Client struct {
 	cfg          *configuration.Configuration // Configuration for the S3 client.
 	input        *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
 	wg           *sync.WaitGroup              // WaitGroup to wait for goroutines to finish.
-	pagesCount   uint32                       // Number of pages processed by the paginator.
-	acceleration bool
+	extensions   []string
+	nameMask     string
 	minSize      int64
 	maxSize      int64
+	pagesCount   uint32 // Number of pages processed by the paginator.
+	maxPages     uint32
+	acceleration bool
 }
 
 var s3Client *Client
@@ -48,9 +51,12 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 				Prefix:  aws.String(cfg.Prefix),        // The prefix of the keys to list objects from.
 				MaxKeys: int32(cfg.Pagination.MaxKeys), // The maximum number of keys to return in each page of results.
 			},
-			wg:      &sync.WaitGroup{},
-			minSize: cfg.GetMinFileSize(),
-			maxSize: cfg.GetMaxFileSize(),
+			wg:         &sync.WaitGroup{},
+			minSize:    cfg.GetMinFileSize(),
+			maxSize:    cfg.GetMaxFileSize(),
+			extensions: strings.Split(cfg.Extension, ","),
+			nameMask:   strings.ToLower(cfg.NameMask),
+			maxPages:   cfg.Pagination.MaxPages,
 		}
 		defaultConfig, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(
@@ -129,7 +135,7 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 		client.sendObjectsToChannel(object, data, cache)
 	})
 
-	for paginator.HasMorePages() {
+	for paginator.HasMorePages() && client.pagesCount != client.maxPages {
 		page, err := paginator.NextPage(ctx, func(o *s3.Options) {
 			o.UseAccelerate = client.acceleration
 		})
@@ -142,6 +148,7 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 		}
 
 		client.pagesCount++
+		fmt.Printf("\rPage %d", client.pagesCount)
 	}
 	pool.Wait()
 	close(data.ProcessedChan)
@@ -154,7 +161,16 @@ func (client *Client) sendObjectsToChannel(object types.Object, data *files.Obje
 		etag := strings.Trim(*object.ETag, "\"")
 		downloaded := cache.HasFile(name, etag, object.Size)
 		if !downloaded {
-			file := files.NewFileFromObject(object)
+			input := &s3.HeadObjectInput{
+				Bucket: aws.String(client.cfg.BucketName),
+				Key:    object.Key,
+			}
+			resp, err := client.HeadObject(context.Background(), input)
+			if err != nil {
+				log.Printf("Failed to get object %s head: %v", *object.Key, err)
+			}
+
+			file := files.NewFileFromObject(object, resp)
 			data.AddFile(file)
 		}
 		cache.RemoveFile(name)
@@ -162,10 +178,17 @@ func (client *Client) sendObjectsToChannel(object types.Object, data *files.Obje
 }
 
 func (client *Client) isValidObject(object types.Object) (string, bool) {
-	name := strings.ReplaceAll(*object.Key, "/", "_")
+	name := strings.ToLower(strings.ReplaceAll(*object.Key, "/", "_"))
+	var hasValidExt bool
 
-	hasValidExt := strings.HasSuffix(name, client.cfg.Extension)
-	hasValidName := strings.Contains(name, client.cfg.NameMask)
+	for _, ext := range client.extensions {
+		if strings.HasSuffix(name, ext) {
+			hasValidExt = true
+			break
+		}
+	}
+
+	hasValidName := strings.Contains(name, client.nameMask)
 	hasValidSize := (client.minSize == 0 || object.Size >= client.minSize) && (client.maxSize == 0 || object.Size <= client.maxSize)
 
 	return name, hasValidExt && hasValidName && hasValidSize

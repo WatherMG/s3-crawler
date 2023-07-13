@@ -15,22 +15,22 @@ type ObjectProcessor func(object types.Object)
 
 func NewWorkerPool(maxWorkers int, processor ObjectProcessor) *WorkerPool {
 	pool := &WorkerPool{
-		work: make(chan types.Object),
+		work: make(chan types.Object, maxWorkers),
 	}
 	pool.wg.Add(maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			defer pool.wg.Done()
-			for file := range pool.work {
-				processor(file)
+			for object := range pool.work {
+				processor(object)
 			}
 		}()
 	}
 	return pool
 }
 
-func (pool *WorkerPool) AddFileFromObject(file types.Object) {
-	pool.work <- file
+func (pool *WorkerPool) AddFileFromObject(object types.Object) {
+	pool.work <- object
 }
 
 func (pool *WorkerPool) Wait() {

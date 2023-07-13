@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,12 +22,14 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	start := time.Now()
 	numWorkers := cfg.NumCPU
 	filesChan := make(chan string, cfg.NumCPU)
+	extensions := strings.Split(cfg.Extension, ",")
+	nameMask := strings.ToLower(cfg.NameMask)
 
 	var wg sync.WaitGroup
 	c.withParts = cfg.HashWithParts
 
 	c.startWorkers(numWorkers, &wg, filesChan)
-	err := c.walkDir(cfg.LocalPath, filesChan)
+	err := c.walkDir(cfg.LocalPath, nameMask, filesChan, extensions)
 	close(filesChan)
 	wg.Wait()
 
@@ -71,21 +74,39 @@ func (c *FileCache) processFile(path string) {
 	}
 }
 
-func (c *FileCache) walkDir(dir string, filesChan chan string) error {
-	return filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
+func (c *FileCache) walkDir(dir, nameMask string, filesChan chan string, extensions []string) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
-			filesChan <- path
+		if !d.IsDir() {
+			if c.isValidObject(path, nameMask, extensions) {
+				filesChan <- path
+			}
 		}
 		return nil
 	})
 }
 
+func (c *FileCache) isValidObject(path, nameMask string, extensions []string) bool {
+	name := strings.ToLower(filepath.Base(path))
+	var hasValidExt bool
+
+	for _, ext := range extensions {
+		if strings.HasSuffix(name, ext) {
+			hasValidExt = true
+			break
+		}
+	}
+
+	hasValidName := strings.Contains(name, nameMask)
+
+	return hasValidExt && hasValidName
+}
+
 var bufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, files.Buffer64KB)
+		b := make([]byte, files.Buffer32KB)
 		return &b
 	},
 }

@@ -13,11 +13,11 @@ type Configuration struct {
 	S3Connection  S3ConnectionConfig `json:"s3Connection"`
 	BucketName    string             `json:"bucketName"`
 	Prefix        string             `json:"s3prefix,omitempty"`
-	Extension     string             `json:"extension,omitempty"`
+	Extension     string             `json:"extensions,omitempty"`
 	NameMask      string             `json:"nameMask,omitempty"`
 	LocalPath     string             `json:"downloadPath"`
 	Pagination    PaginationConfig   `json:"pagination"`
-	Downloaders   uint16             `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
+	Downloaders   int                `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
 	NumCPU        uint8              `json:"numCPU,omitempty"`      // - отвечает за распределение нагрузки на ядра процессора
 	Compression   bool               `json:"compression,omitempty"`
 	HashWithParts bool               `json:"withParts"`
@@ -33,7 +33,8 @@ type S3ConnectionConfig struct {
 }
 
 type PaginationConfig struct {
-	MaxKeys uint16 `json:"maxKeys,omitempty"`
+	MaxPages uint32 `json:"maxPages,omitempty"`
+	MaxKeys  uint16 `json:"maxKeys,omitempty"`
 }
 
 func LoadConfig(filename string) (*Configuration, error) {
