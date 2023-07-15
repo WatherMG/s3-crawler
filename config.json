@@ -7,14 +7,24 @@
   },
   "bucketName": "",
   "s3prefix": "",
-  "extension": "",
+  "extensions": "",
   "nameMask": "",
   "minFileSizeMB": 0,
+  "maxFileSizeMB": 0,
   "pagination": {
-    "maxKeys": 1000
+    "maxKeys": 1000,
+    "maxPages": 0
   },
-  "NumCPU": 16,
-  "compression": false,
+  "numCPU": 16,
+  "downloaders": 0,
+  "decompress": true,
+  "withDirName": true,
+  "deleteAfterDecompress": false,
   "withParts": false ,
-  "downloadPath": "/tmp/upload/data"
+  "downloadPath": "/tmp/upload/data",
+  "progress" : {
+    "withProgressBar": false,
+    "delay": 500,
+    "barSize": 20
+  }
 }

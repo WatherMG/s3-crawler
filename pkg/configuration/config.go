@@ -10,19 +10,22 @@ import (
 )
 
 type Configuration struct {
-	S3Connection  S3ConnectionConfig `json:"s3Connection"`
-	BucketName    string             `json:"bucketName"`
-	Prefix        string             `json:"s3prefix,omitempty"`
-	Extension     string             `json:"extensions,omitempty"`
-	NameMask      string             `json:"nameMask,omitempty"`
-	LocalPath     string             `json:"downloadPath"`
-	Pagination    PaginationConfig   `json:"pagination"`
-	Downloaders   int                `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
-	NumCPU        uint8              `json:"numCPU,omitempty"`      // - отвечает за распределение нагрузки на ядра процессора
-	Compression   bool               `json:"compression,omitempty"`
-	HashWithParts bool               `json:"withParts"`
-	MinFileSize   int64              `json:"minFileSizeMB,omitempty"`
-	MaxFileSize   int64              `json:"maxFileSizeMB,omitempty"`
+	S3Connection            S3ConnectionConfig `json:"s3Connection"`
+	BucketName              string             `json:"bucketName"`
+	Prefix                  string             `json:"s3prefix,omitempty"`
+	Extension               string             `json:"extensions,omitempty"`
+	NameMask                string             `json:"nameMask,omitempty"`
+	LocalPath               string             `json:"downloadPath"`
+	MaxFileSize             int64              `json:"maxFileSizeMB,omitempty"`
+	MinFileSize             int64              `json:"minFileSizeMB,omitempty"`
+	Downloaders             int                `json:"downloaders,omitempty"` // - максимальное количество одновременно запущенных горутин для скачивания файлов
+	Pagination              PaginationConfig   `json:"pagination"`
+	Progress                Progress           `json:"progress,omitempty"`
+	NumCPU                  uint8              `json:"numCPU,omitempty"` // - отвечает за распределение нагрузки на ядра процессора
+	IsDecompress            bool               `json:"decompress,omitempty"`
+	IsWithDirName           bool               `json:"withDirName"`
+	IsDeleteAfterDecompress bool               `json:"deleteAfterDecompress,omitempty"`
+	HashWithParts           bool               `json:"withParts"`
 }
 
 type S3ConnectionConfig struct {
@@ -35,6 +38,12 @@ type S3ConnectionConfig struct {
 type PaginationConfig struct {
 	MaxPages uint32 `json:"maxPages,omitempty"`
 	MaxKeys  uint16 `json:"maxKeys,omitempty"`
+}
+
+type Progress struct {
+	BarSize         int           `json:"barSize,omitempty"`
+	Delay           time.Duration `json:"delay,omitempty"`
+	WithProgressBar bool          `json:"withProgressBar,omitempty"`
 }
 
 func LoadConfig(filename string) (*Configuration, error) {

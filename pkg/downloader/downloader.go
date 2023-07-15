@@ -3,15 +3,19 @@ package downloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"s3-crawler/pkg/archives"
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/printprogress"
 	"s3-crawler/pkg/s3client"
+	"s3-crawler/pkg/utils"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -19,13 +23,13 @@ import (
 	"github.com/aws/smithy-go/logging"
 )
 
-const DownloadersModifier int = 1<<9 + 113
+const DownloadersModifier int = 1 << 9
 
 type Downloader struct {
-	cfg     *configuration.Configuration
-	manager *manager.Downloader
-	client  *s3client.Client
+	cfg *configuration.Configuration
+	*s3client.Client
 	wg      *sync.WaitGroup
+	printer printprogress.ProgressPrinter
 }
 
 var downloader *Downloader
@@ -34,25 +38,37 @@ var once sync.Once
 func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *Downloader {
 	once.Do(func() {
 		downloader = &Downloader{
-			client: client,
-			cfg:    cfg,
-			wg:     &sync.WaitGroup{},
+			Client:  client,
+			cfg:     cfg,
+			wg:      &sync.WaitGroup{},
+			printer: printprogress.NewPrinter(cfg),
 		}
 	})
 	return downloader
 }
 
-func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Objects) error {
-	activeFiles := sync.Map{}
+func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.FileCollection) error {
+	activeFiles := &sync.Map{}
 	start := time.Now()
-	go downloader.printProgress(ctx, data, &activeFiles, start)
+	go downloader.printer.StartProgressTicker(ctx, data, activeFiles, start)
 
-	for i := 0; i < int(downloader.cfg.NumCPU)*DownloadersModifier; i++ {
+	var workers int
+	if downloader.cfg.Downloaders > 0 {
+		workers = downloader.cfg.Downloaders
+	} else {
+		workers = int(downloader.cfg.NumCPU) * DownloadersModifier
+	}
+
+	if workers > 10000 {
+		workers = 10000
+	}
+
+	for i := 0; i < workers; i++ {
 		downloader.wg.Add(1)
 		go func() {
 			defer downloader.wg.Done()
-			for file := range data.ProcessedChan {
-				if err := downloader.downloadFile(ctx, file, data, &activeFiles); err != nil {
+			for file := range data.DownloadChan {
+				if err := downloader.downloadFile(ctx, file, data, activeFiles); err != nil {
 					log.Printf("Download error: %v", err)
 					return
 				}
@@ -63,88 +79,124 @@ func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Obj
 	downloader.wg.Wait()
 
 	elapsed := time.Since(start)
-	_, bytesInMiB, averageSpeed, _, _ := data.GetStats(elapsed)
-	fmt.Printf("\n\nDownloaded all files in %s. Total filesize: %.3fMB\n", elapsed, bytesInMiB)
-	fmt.Printf("Average speed = %.3fMBps\n", averageSpeed)
+	_, _, _, bytes, _, averageSpeed, _ := data.GetStatistics(elapsed)
+	// clear line
+	fmt.Print("\u001B[2K\r")
+	if data.Count() > 0 {
+		result := fmt.Sprintf("Downloaded all files in %s. Total filesize: %s\n", elapsed, utils.FormatBytes(bytes))
+		result += fmt.Sprintf("Average speed = %s\n", utils.FormatBytes(int64(averageSpeed)))
+		fmt.Print(result)
+	} else {
+		fmt.Printf("Nothing to download. Exit...\n")
+	}
 
 	return nil
 }
 
-func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File, data *files.Objects, activeFiles *sync.Map) error {
+func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File, data *files.FileCollection, activeFiles *sync.Map) error {
 	activeFiles.Store(file.Name, true)
+	defer activeFiles.Delete(file.Name)
+	defer file.ReturnToPool()
 
-	input := &s3.GetObjectInput{
-		Bucket: aws.String(downloader.cfg.BucketName),
-		Key:    aws.String(file.Key),
-	}
-
-	newDownloader := manager.NewDownloader(downloader.client, func(d *manager.Downloader) {
-		d.Logger = logging.NewStandardLogger(os.Stdout)
-	})
-
-	path := filepath.Join(downloader.cfg.LocalPath, file.Name)
+	path := downloader.getFilePath(file)
 	destinationFile, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer destinationFile.Close()
 
-	parts := file.Size / files.ChunkSize
-	if file.Size%files.ChunkSize != 0 {
-		parts++
+	pw := &progressWriterAt{
+		writer:   destinationFile,
+		fileSize: file.Size,
+		callback: func(n int64) {
+			data.UpdateProgress(file, n)
+		},
 	}
-
-	if file.Size <= files.ChunkSize {
-		newDownloader.PartSize = file.Size
-		newDownloader.Concurrency = 1
-		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.Buffer32KB)
-	} else {
-		newDownloader.PartSize = files.ChunkSize
-		newDownloader.Concurrency = int(parts)
-		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.MiB)
-	}
-
-	numBytes, err := newDownloader.Download(ctx, destinationFile, input)
-	if err != nil {
+	if err = downloader.download(ctx, file, pw); err != nil {
 		return err
 	}
 
-	data.SetProgress(numBytes)
-	activeFiles.Delete(file.Name)
-	file.ReturnToPool()
+	if downloader.cfg.IsDecompress && archives.IsSupportedArchive(file.Name) {
+		if err = downloader.decompressFile(destinationFile, path, file); err != nil {
+			return err
+		}
+	}
+	data.MarkAsDownloaded(file)
 
 	return nil
 }
 
-func (downloader *Downloader) printProgress(ctx context.Context, data *files.Objects, activeFiles *sync.Map, start time.Time) {
-	delay := (1000 / time.Duration(downloader.cfg.NumCPU)) * time.Millisecond
-	ticker := time.NewTicker(delay)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			remainDownloads := 0
-			activeFiles.Range(func(_, b any) bool {
-				if b == true {
-					remainDownloads++
-				}
-				return true
-			})
-			switch {
-			case remainDownloads > 0:
-				dataCount, bytesInMiB, _, progress, remainMBToDownload := data.GetStats(time.Since(start))
-				fmt.Printf("\u001B[2K\rDownloaded %.2f/%.2f MB (%.2f%%). ", progress, bytesInMiB, progress/bytesInMiB*100)
-				fmt.Printf("Total [%d] file(s). Remain [%d] file(s) (%.2f MB).", dataCount, remainDownloads, remainMBToDownload)
-			default:
-				if data.ProcessedChan != nil && remainDownloads != 0 {
-					for _, r := range `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` {
-						fmt.Printf("\u001B[2K\r%c Waiting metadata to download from bucket.", r)
-						time.Sleep(delay)
-					}
-				}
-			}
+func (downloader *Downloader) getFilePath(file *files.File) string {
+	return filepath.Join(downloader.cfg.LocalPath, file.Name)
+}
+
+func (downloader *Downloader) decompressFile(destinationFile *os.File, path string, file *files.File) error {
+	destinationFile.Close()
+	var decompressedPath string
+	if downloader.cfg.IsWithDirName {
+		decompressedPath = filepath.Join(downloader.cfg.LocalPath, "decompressed", file.Name)
+	} else {
+		decompressedPath = filepath.Join(downloader.cfg.LocalPath, "decompressed")
+	}
+	if err := archives.DecompressFile(path, decompressedPath); err != nil {
+		return err
+	}
+	if downloader.cfg.IsDeleteAfterDecompress {
+		if err := os.Remove(path); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func (downloader *Downloader) download(ctx context.Context, file *files.File, w io.WriterAt) error {
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(downloader.cfg.BucketName),
+		Key:    aws.String(file.Key),
+	}
+	newDownloader := downloader.createDownloader(file.Size)
+
+	_, err := newDownloader.Download(ctx, w, input)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (downloader *Downloader) createDownloader(fileSize int64) *manager.Downloader {
+	newDownloader := manager.NewDownloader(downloader, func(d *manager.Downloader) {
+		d.Logger = logging.NewStandardLogger(os.Stdout)
+	})
+
+	parts, partSize, bufferSize, maxRetries := downloader.getDownloadParts(fileSize)
+
+	newDownloader.PartSize = partSize
+	newDownloader.Concurrency = int(parts)
+	if bufferSize != 0 {
+		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(bufferSize)
+	}
+	newDownloader.PartBodyMaxRetries = maxRetries
+
+	return newDownloader
+}
+
+func (downloader *Downloader) getDownloadParts(fileSize int64) (int64, int64, int, int) {
+	var parts, partSize int64
+	var bufferSize, maxRetries int
+	if fileSize <= files.ChunkSize {
+		parts = 1
+		partSize = fileSize
+		bufferSize = files.Buffer32KB
+		maxRetries = 1
+	} else {
+		parts = fileSize / files.ChunkSize
+		if fileSize%files.ChunkSize != 0 {
+			parts++
+		}
+		partSize = files.ChunkSize
+		bufferSize = files.MiB
+		maxRetries = 5
+	}
+	return parts, partSize, bufferSize, maxRetries
 }

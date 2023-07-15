@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -16,9 +19,16 @@ import (
 	"s3-crawler/pkg/downloader"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/s3client"
+	"s3-crawler/pkg/utils"
 )
 
+var confPath = flag.String("config", "../config1.json", "path to the configuration file")
+
 func main() {
+	flag.Parse()
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	f, err := os.Create("mem.prof")
 	if err != nil {
 		log.Fatal(err)
@@ -44,16 +54,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // TODO: add timeout to config
 	defer cancel()
 
-	cfg, err := configuration.LoadConfig("../config1.json") // TODO: add config path to config
+	cfg, err := configuration.LoadConfig(*confPath) // TODO: add config path to config
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err = createPath(cfg.LocalPath); err != nil {
+	if err = utils.CreatePath(cfg.LocalPath); err != nil {
 		log.Fatal(err)
 	}
-
-	// defer os.RemoveAll(cfg.LocalPath)
 
 	cache := cacher.NewCache()
 	if err = cache.LoadFromDir(cfg); err != nil {
@@ -68,7 +76,7 @@ func main() {
 
 	runtime.GOMAXPROCS(int(cfg.NumCPU))
 
-	data := files.NewObject(cfg.Pagination.MaxKeys)
+	data := files.NewFileCollection(cfg.Pagination.MaxKeys)
 
 	if err = client.CheckBucket(ctx); err != nil {
 		log.Fatal(err)
@@ -95,18 +103,7 @@ func main() {
 	pprof.WriteHeapProfile(f)
 }
 
-func createPath(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err = os.MkdirAll(path, os.ModePerm)
-		if err != nil {
-			log.Printf("MkdirAll error: %v", err)
-			return err
-		}
-	}
-	return nil
-}
-
-func memstat(data *files.Objects) {
+func memstat(data *files.FileCollection) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	f, err := os.OpenFile("mem.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0755)
@@ -115,7 +112,7 @@ func memstat(data *files.Objects) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "------------------------------------\nMem for file Pool in listobjects\n")
-	fmt.Fprintf(f, "With %d objects in bucket\n", len(data.ProcessedChan))
+	fmt.Fprintf(f, "With %d objects in bucket\n", len(data.DownloadChan))
 
 	fmt.Fprintf(f, "Alloc = %v MiB\n", m.Alloc/files.MiB)
 	fmt.Fprintf(f, "TotalAlloc = %v MiB\n", m.TotalAlloc/files.MiB)

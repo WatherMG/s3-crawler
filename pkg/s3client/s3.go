@@ -12,6 +12,7 @@ import (
 	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/utils"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -30,8 +31,8 @@ type Client struct {
 	nameMask     string
 	minSize      int64
 	maxSize      int64
-	pagesCount   uint32 // Number of pages processed by the paginator.
-	maxPages     uint32
+	maxPages     int
+	pagesCount   int // Number of pages processed by the paginator.
 	acceleration bool
 }
 
@@ -56,7 +57,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 			maxSize:    cfg.GetMaxFileSize(),
 			extensions: strings.Split(cfg.Extension, ","),
 			nameMask:   strings.ToLower(cfg.NameMask),
-			maxPages:   cfg.Pagination.MaxPages,
+			maxPages:   int(cfg.Pagination.MaxPages),
 		}
 		defaultConfig, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(
@@ -73,6 +74,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 				"",
 			)),
 			config.WithRegion(cfg.S3Connection.Region), // The region to use for the S3 service.
+			config.WithRetryMaxAttempts(8),
 		)
 		if err != nil {
 			log.Fatal(err)
@@ -116,17 +118,17 @@ func (client *Client) CheckBucket(ctx context.Context) error {
 
 // ListObjects lists objects from the bucket specified in the configuration and
 // sends them to be processed.
-func (client *Client) ListObjects(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
+func (client *Client) ListObjects(ctx context.Context, data *files.FileCollection, cache *cacher.FileCache) error {
 	start := time.Now()
 	if err := client.processPages(ctx, data, cache); err != nil {
 		return err
 	}
-	fmt.Printf("\u001B[2K\nListObjects: recive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
+	fmt.Printf("\u001B[2K\nRecive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
 	return nil
 }
 
 // processPages processes pages of results returned by the paginator and sends items to be processed.
-func (client *Client) processPages(ctx context.Context, data *files.Objects, cache *cacher.FileCache) error {
+func (client *Client) processPages(ctx context.Context, data *files.FileCollection, cache *cacher.FileCache) error {
 	paginator := s3.NewListObjectsV2Paginator(client, client.input, func(o *s3.ListObjectsV2PaginatorOptions) {
 		o.StopOnDuplicateToken = true
 	})
@@ -134,8 +136,11 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 	pool := NewWorkerPool(int(client.cfg.Pagination.MaxKeys), func(object types.Object) {
 		client.sendObjectsToChannel(object, data, cache)
 	})
+	if client.maxPages == 0 {
+		client.maxPages = -1
+	}
 
-	for paginator.HasMorePages() && client.pagesCount != client.maxPages {
+	for paginator.HasMorePages() && client.maxPages != client.pagesCount {
 		page, err := paginator.NextPage(ctx, func(o *s3.Options) {
 			o.UseAccelerate = client.acceleration
 		})
@@ -148,52 +153,42 @@ func (client *Client) processPages(ctx context.Context, data *files.Objects, cac
 		}
 
 		client.pagesCount++
-		fmt.Printf("\rPage %d", client.pagesCount)
+		// fmt.Printf("Page %d\n", client.pagesCount)
 	}
 	pool.Wait()
-	close(data.ProcessedChan)
+	close(data.DownloadChan)
 	return nil
 }
 
 // sendObjectsToChannel sends items to be processed through the objectsChan channel.
-func (client *Client) sendObjectsToChannel(object types.Object, data *files.Objects, cache *cacher.FileCache) {
+func (client *Client) sendObjectsToChannel(object types.Object, data *files.FileCollection, cache *cacher.FileCache) {
 	if name, valid := client.isValidObject(object); valid {
 		etag := strings.Trim(*object.ETag, "\"")
 		downloaded := cache.HasFile(name, etag, object.Size)
 		if !downloaded {
-			input := &s3.HeadObjectInput{
-				Bucket: aws.String(client.cfg.BucketName),
-				Key:    object.Key,
-			}
-			resp, err := client.HeadObject(context.Background(), input)
-			if err != nil {
-				log.Printf("Failed to get object %s head: %v", *object.Key, err)
-			}
-
-			file := files.NewFileFromObject(object, resp)
-			data.AddFile(file)
+			file := files.NewFileFromObject(object)
+			data.Add(file)
 		}
 		cache.RemoveFile(name)
 	}
 }
 
 func (client *Client) isValidObject(object types.Object) (string, bool) {
+	// Normalize the object key by replacing slashes with underscores and converting to lowercase
 	name := strings.ToLower(strings.ReplaceAll(*object.Key, "/", "_"))
-	var hasValidExt bool
 
-	for _, ext := range client.extensions {
-		if strings.HasSuffix(name, ext) {
-			hasValidExt = true
-			break
-		}
-	}
+	// Check if the object has a valid file extension
+	hasValidExt := utils.HasValidExtension(name, client.extensions)
 
-	hasValidName := strings.Contains(name, client.nameMask)
-	hasValidSize := (client.minSize == 0 || object.Size >= client.minSize) && (client.maxSize == 0 || object.Size <= client.maxSize)
+	// Check if the object has a valid name
+	hasValidName := utils.HasValidName(name, client.nameMask)
+
+	// Check if the object has a valid size
+	hasValidSize := utils.HasValidSize(object.Size, client.minSize, client.maxSize)
 
 	return name, hasValidExt && hasValidName && hasValidSize
 }
 
-func (client *Client) GetPagesCount() uint32 {
+func (client *Client) GetPagesCount() int {
 	return client.pagesCount
 }

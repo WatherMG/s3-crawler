@@ -16,6 +16,7 @@ import (
 
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/utils"
 )
 
 func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
@@ -34,7 +35,7 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	wg.Wait()
 
 	log.Printf("Cache loaded from %s.\n", time.Since(start))
-	log.Printf("Total files in cache: %d. Total size %d MB.\n", c.totalCount, c.TotalSize/files.MiB)
+	log.Printf("Total files in cache: %d. Total size %s.\n", c.totalCount, utils.FormatBytes(c.TotalSize))
 
 	return err
 }
@@ -90,16 +91,9 @@ func (c *FileCache) walkDir(dir, nameMask string, filesChan chan string, extensi
 
 func (c *FileCache) isValidObject(path, nameMask string, extensions []string) bool {
 	name := strings.ToLower(filepath.Base(path))
-	var hasValidExt bool
 
-	for _, ext := range extensions {
-		if strings.HasSuffix(name, ext) {
-			hasValidExt = true
-			break
-		}
-	}
-
-	hasValidName := strings.Contains(name, nameMask)
+	hasValidExt := utils.HasValidExtension(path, extensions)
+	hasValidName := utils.HasValidName(name, nameMask)
 
 	return hasValidExt && hasValidName
 }

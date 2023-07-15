@@ -5,56 +5,69 @@ import (
 	"time"
 )
 
-// Objects represents a collection of File objects.
-type Objects struct {
-	ProcessedChan chan *File // ProcessedChan is a channel of File objects.
-	totalBytes    int64      // totalBytes is the total number of bytes in the ProcessedChan collection.
-	count         uint32     // count is the current count of objects in the ProcessedChan collection.
-	progress      int64
-	mu            sync.Mutex
+// FileCollection represents a collection of File objects.
+type FileCollection struct {
+	DownloadChan    chan *File // DownloadChan is a channel of File objects.
+	totalBytes      int64      // totalBytes is the total number of bytes in the DownloadChan collection.
+	count           uint32     // count is the current count of objects in the DownloadChan collection.
+	progress        int64      // progress is the current sum of a bytes downloaded from bucket
+	progressMap     map[*File]int64
+	downloadedFiles map[*File]bool
+	mu              sync.Mutex
 }
 
-// NewObject returns the singleton objects of the Objects structure.
-func NewObject(capacity uint16) *Objects {
-	var objects *Objects // objects is a pointer to the singleton instance of the ProcessedChan structure.
-	var once sync.Once   // once is used to synchronize and ensure that objects initialization happens only once.
-
-	once.Do(func() {
-		objects = &Objects{
-			ProcessedChan: make(chan *File, capacity),
-		}
-	})
-
-	return objects
+// NewFileCollection returns a new instance of the FileCollection structure with the specified capacity.
+func NewFileCollection(capacity uint16) *FileCollection {
+	return &FileCollection{
+		DownloadChan:    make(chan *File, capacity),
+		progressMap:     make(map[*File]int64),
+		downloadedFiles: make(map[*File]bool),
+	}
 }
 
-func (objects *Objects) AddFile(file *File) {
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
-	objects.ProcessedChan <- file
-	objects.totalBytes += file.Size
-	objects.count++
+// Add adds a file to the collection and updates the total bytes and count.
+func (fc *FileCollection) Add(file *File) {
+	fc.DownloadChan <- file
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.totalBytes += file.Size
+	fc.count++
 }
 
-func (objects *Objects) GetStats(duration time.Duration) (count uint32, bytesInMiB, averageSpeed, progress, remainMBToDownload float64) {
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
-	count = objects.count
-	bytesInMiB = float64(objects.totalBytes) / MiB
-	progress = float64(objects.progress) / MiB
-	remainMBToDownload = bytesInMiB - progress
-	averageSpeed = progress / duration.Seconds()
+// GetStatistics returns statistics about the files in the collection.
+func (fc *FileCollection) GetStatistics(duration time.Duration) (count, downloadedCount, remainingCount uint32, totalBytes, progressBytes int64, averageSpeed float64, progressRatio float64) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	count = fc.count
+	downloadedCount = uint32(len(fc.downloadedFiles))
+	remainingCount = count - downloadedCount
+	totalBytes = fc.totalBytes
+	progressBytes = fc.progress
+	progressRatio = float64(progressBytes) / float64(totalBytes)
+	averageSpeed = float64(progressBytes) / duration.Seconds()
 	return
 }
 
-func (objects *Objects) SetProgress(progress int64) {
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
-	objects.progress += progress
+// UpdateProgress updates the progress of the file collection by adding the specified number of bytes to the progress.
+func (fc *FileCollection) UpdateProgress(file *File, progress int64) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if _, ok := fc.progressMap[file]; !ok {
+		fc.progressMap[file] = 0
+	}
+	fc.progressMap[file] += progress
+	fc.progress += progress
 }
 
-func (objects *Objects) Count() uint32 {
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
-	return objects.count
+func (fc *FileCollection) MarkAsDownloaded(file *File) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.downloadedFiles[file] = true
+}
+
+// Count returns the current count of files in the collection.
+func (fc *FileCollection) Count() uint32 {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return fc.count
 }
