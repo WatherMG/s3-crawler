@@ -25,11 +25,12 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	filesChan := make(chan string, cfg.NumCPU)
 	extensions := strings.Split(cfg.Extension, ",")
 	nameMask := strings.ToLower(cfg.NameMask)
+	chunkSize := cfg.GetChunkSize()
 
 	var wg sync.WaitGroup
-	c.withParts = cfg.HashWithParts
+	c.withParts = cfg.IsHashWithParts
 
-	c.startWorkers(numWorkers, &wg, filesChan)
+	c.startWorkers(numWorkers, &wg, filesChan, chunkSize)
 	err := c.walkDir(cfg.LocalPath, nameMask, filesChan, extensions)
 	close(filesChan)
 	wg.Wait()
@@ -40,19 +41,19 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	return err
 }
 
-func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string) {
+func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string, chunkSize int64) {
 	for i := uint8(0); i <= numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for path := range filesChan {
-				c.processFile(path)
+				c.processFile(path, chunkSize)
 			}
 		}()
 	}
 }
 
-func (c *FileCache) processFile(path string) {
+func (c *FileCache) processFile(path string, chunkSize int64) {
 	info, err := os.Stat(path)
 	if err != nil {
 		fmt.Printf("Error stating file %s: %s\n", path, err.Error())
@@ -60,7 +61,7 @@ func (c *FileCache) processFile(path string) {
 	}
 
 	if !info.IsDir() {
-		etag, err := getHash(path, c.withParts)
+		etag, err := getHash(path, c.withParts, chunkSize)
 		if err != nil {
 			fmt.Printf("Error calculating ETag for file %s: %s\n", path, err.Error())
 			return
@@ -105,7 +106,7 @@ var bufPool = sync.Pool{
 	},
 }
 
-func getHash(filePath string, withParts bool) (string, error) {
+func getHash(filePath string, withParts bool, chunkSize int64) (string, error) {
 	file, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return "", err
@@ -122,7 +123,7 @@ func getHash(filePath string, withParts bool) (string, error) {
 	buf := bufPool.Get().(*[]byte)
 	defer bufPool.Put(buf)
 
-	if !withParts || fileSize <= files.ChunkSize {
+	if !withParts || fileSize <= chunkSize {
 		hash := md5.New()
 
 		if _, err := io.CopyBuffer(hash, file, *buf); err != nil {
@@ -132,13 +133,13 @@ func getHash(filePath string, withParts bool) (string, error) {
 		return hex.EncodeToString(hash.Sum(nil)), nil
 	}
 
-	parts := fileSize / files.ChunkSize
-	if fileSize%files.ChunkSize != 0 {
+	parts := fileSize / chunkSize
+	if fileSize%chunkSize != 0 {
 		parts++
 	}
 	finalHash := md5.New()
 	for i := int64(0); i < parts; i++ {
-		partReader := io.NewSectionReader(file, i*files.ChunkSize, files.ChunkSize)
+		partReader := io.NewSectionReader(file, i*chunkSize, chunkSize)
 		partHash := md5.New()
 		if _, err := io.CopyBuffer(partHash, partReader, *buf); err != nil {
 			return "", err

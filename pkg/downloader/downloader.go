@@ -23,8 +23,6 @@ import (
 	"github.com/aws/smithy-go/logging"
 )
 
-const DownloadersModifier int = 1 << 9
-
 type Downloader struct {
 	cfg *configuration.Configuration
 	*s3client.Client
@@ -52,18 +50,7 @@ func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Fil
 	start := time.Now()
 	go downloader.printer.StartProgressTicker(ctx, data, activeFiles, start)
 
-	var workers int
-	if downloader.cfg.Downloaders > 0 {
-		workers = downloader.cfg.Downloaders
-	} else {
-		workers = int(downloader.cfg.NumCPU) * DownloadersModifier
-	}
-
-	if workers > 10000 {
-		workers = 10000
-	}
-
-	for i := 0; i < workers; i++ {
+	for i := 0; i < downloader.cfg.GetDownloaders(); i++ {
 		downloader.wg.Add(1)
 		go func() {
 			defer downloader.wg.Done()
@@ -116,7 +103,7 @@ func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File
 		return err
 	}
 
-	if downloader.cfg.IsDecompress && archives.IsSupportedArchive(file.Name) {
+	if downloader.cfg.IsDecompress && file.IsArchive() && archives.IsSupportedArchive(file.Name) {
 		if err = downloader.decompressFile(destinationFile, path, file); err != nil {
 			return err
 		}
@@ -184,17 +171,18 @@ func (downloader *Downloader) createDownloader(fileSize int64) *manager.Download
 func (downloader *Downloader) getDownloadParts(fileSize int64) (int64, int64, int, int) {
 	var parts, partSize int64
 	var bufferSize, maxRetries int
-	if fileSize <= files.ChunkSize {
+	chunkSize := downloader.cfg.GetChunkSize()
+	if fileSize <= chunkSize {
 		parts = 1
 		partSize = fileSize
 		bufferSize = files.Buffer32KB
 		maxRetries = 1
 	} else {
-		parts = fileSize / files.ChunkSize
-		if fileSize%files.ChunkSize != 0 {
+		parts = fileSize / chunkSize
+		if fileSize%chunkSize != 0 {
 			parts++
 		}
-		partSize = files.ChunkSize
+		partSize = chunkSize
 		bufferSize = files.MiB
 		maxRetries = 5
 	}

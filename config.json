@@ -13,7 +13,8 @@
   "maxFileSizeMB": 0,
   "pagination": {
     "maxKeys": 1000,
-    "maxPages": 0
+    "maxPages": 0,
+    "chunkSize": 0
   },
   "numCPU": 16,
   "downloaders": 0,

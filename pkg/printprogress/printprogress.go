@@ -25,7 +25,7 @@ type TextProgressPrinter struct {
 
 // GraphicalProgressPrinter uses text-based graphics for progress bar
 type GraphicalProgressPrinter struct {
-	BarLength int
+	BarLength uint8
 	Delay     time.Duration
 }
 
@@ -55,14 +55,14 @@ func NewPrinter(cfg *configuration.Configuration) ProgressPrinter {
 }
 
 // createProgressBar Helper function to create progress bar as a string
-func createProgressBar(barLength int, progressRatio float64) string {
+func createProgressBar(barLength uint8, progressRatio float64) string {
 	if barLength == 0 {
 		barLength = 20
 	}
-	progressBar := int(progressRatio * float64(barLength))
+	progressBar := uint8(progressRatio * float64(barLength))
 	var result strings.Builder
 	result.WriteString("[") // starting bar
-	for i := 0; i < barLength; i++ {
+	for i := uint8(0); i < barLength; i++ {
 		switch {
 		case i < progressBar:
 			result.WriteString("█") // completed part of the bar

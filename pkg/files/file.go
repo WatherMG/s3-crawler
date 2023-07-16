@@ -9,22 +9,35 @@ import (
 )
 
 const (
-	ChunkSize = 8 * MiB // Используется для корректного разбиения на чанки для составления хеша локального файла, такой размер используется при aws s3 cp s3:// или aws s3 sync, и от размера чанка рассчитывается хеш на s3 бакете
 	Buffer8KB = 1 << 12 << iota
 	Buffer16KB
 	Buffer32KB
 	Buffer64KB
 	KiB = 1 << 10
-	MiB = 1 << 20 // MiB is a constant representing the number of bytes in a mebibyte.
+	MiB = 1 << 20
 )
+
+// archives is a map of known archive extensions.
+var archives map[string]bool
+
+func init() {
+	archives = map[string]bool{
+		".zip": true,
+		".rar": true,
+		".tar": true,
+		".gz":  true,
+		".bz2": true,
+		".7z":  true,
+	}
+}
 
 // File represents a file with a Key, Size, and ETag.
 type File struct {
 	Key       string // Key is the key of the file.
 	Name      string // Name is the name of the file.
 	ETag      string // ETag is the ETag of the file.
-	Size      int64  // Size is the size of the file in bytes.
 	Extension string
+	Size      int64 // Size is the size of the file in bytes.
 }
 
 // filePool is a pool of File objects for reuse.
@@ -63,10 +76,13 @@ func (f *File) ReturnToPool() {
 
 // reset resets the fields of the File objects to their initial values.
 func (f *File) reset() {
-	if f.Key != "" || f.Name != "" || f.ETag != "" || f.Size != 0 {
-		f.Key = ""
-		f.Name = ""
-		f.Size = 0
-		f.ETag = ""
-	}
+	f.Key = ""
+	f.Name = ""
+	f.Size = 0
+	f.ETag = ""
+	f.Extension = ""
+}
+
+func (f *File) IsArchive() bool {
+	return archives[f.Extension]
 }

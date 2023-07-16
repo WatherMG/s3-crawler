@@ -54,7 +54,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // TODO: add timeout to config
 	defer cancel()
 
-	cfg, err := configuration.LoadConfig(*confPath) // TODO: add config path to config
+	cfg, err := configuration.LoadConfig(*confPath)
 	if err != nil {
 		log.Fatal(err)
 	}

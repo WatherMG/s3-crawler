@@ -68,7 +68,7 @@ func TestGetFileMD5Hash(t *testing.T) {
 		expectedHashes[filePath] = hex.EncodeToString(hash[:]) + "-" + strconv.Itoa(parts)
 	}
 	for filePath, expectedHash := range expectedHashes {
-		hash, err := getHash(filePath)
+		hash, err := getHash(filePath, 0)
 		if err != nil {
 			t.Errorf("Error hasing data for file %s: %v", filePath, err)
 			continue
