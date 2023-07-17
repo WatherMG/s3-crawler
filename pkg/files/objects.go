@@ -8,9 +8,10 @@ import (
 // FileCollection represents a collection of File objects.
 type FileCollection struct {
 	DownloadChan    chan *File // DownloadChan is a channel of File objects.
-	totalBytes      int64      // totalBytes is the total number of bytes in the DownloadChan collection.
-	count           uint32     // count is the current count of objects in the DownloadChan collection.
-	progress        int64      // progress is the current sum of a bytes downloaded from bucket
+	DownloadMap     map[string]*File
+	totalBytes      int64  // totalBytes is the total number of bytes in the DownloadChan collection.
+	count           uint32 // count is the current count of objects in the DownloadChan collection.
+	progress        int64  // progress is the current sum of a bytes downloaded from bucket
 	progressMap     map[*File]int64
 	downloadedFiles map[*File]bool
 	mu              sync.Mutex
@@ -20,9 +21,16 @@ type FileCollection struct {
 func NewFileCollection(capacity uint16) *FileCollection {
 	return &FileCollection{
 		DownloadChan:    make(chan *File, capacity),
+		DownloadMap:     make(map[string]*File),
 		progressMap:     make(map[*File]int64),
 		downloadedFiles: make(map[*File]bool),
 	}
+}
+func (fc *FileCollection) Lock() {
+	fc.mu.Lock()
+}
+func (fc *FileCollection) Unlock() {
+	fc.mu.Unlock()
 }
 
 // Add adds a file to the collection and updates the total bytes and count.

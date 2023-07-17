@@ -28,13 +28,13 @@ type Configuration struct {
 	MaxFileSize             uint64             `json:"maxFileSizeMB,omitempty"` // MaxFileSize is the maximum file size in MB.
 	MinFileSize             uint64             `json:"minFileSizeMB,omitempty"` // MinFileSize is the minimum file size in MB.
 	Pagination              PaginationConfig   `json:"pagination"`
-	Downloaders             uint16             `json:"downloaders,omitempty"` // Downloaders is the maximum number of concurrent goroutines for downloading files.
-	Progress                Progress           `json:"progress,omitempty"`
+	Downloaders             uint16             `json:"downloaders,omitempty"`           // Downloaders is the maximum number of concurrent goroutines for downloading files.
 	NumCPU                  uint8              `json:"numCPU,omitempty"`                // NumCPU controls the distribution of load on processor cores.
 	IsDecompress            bool               `json:"decompress,omitempty"`            // IsDecompress specifies whether to decompress downloaded files.
 	IsWithDirName           bool               `json:"withDirName"`                     // IsWithDirName specifies whether to include directory names in downloaded file paths.
 	IsDeleteAfterDecompress bool               `json:"deleteAfterDecompress,omitempty"` // IsDeleteAfterDecompress specifies whether to delete downloaded files after decompression.
 	IsHashWithParts         bool               `json:"withParts"`                       // IsHashWithParts specifies whether to include parts in hash calculation.
+	Progress                Progress           `json:"progress,omitempty"`
 }
 
 // S3ConnectionConfig holds settings for connecting to S3.

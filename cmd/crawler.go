@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
-	"sync"
 	"time"
 
 	"s3-crawler/pkg/cacher"
@@ -49,7 +48,7 @@ func main() {
 	}
 	defer trace.Stop()
 
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // TODO: add timeout to config
 	defer cancel()
@@ -76,28 +75,27 @@ func main() {
 
 	runtime.GOMAXPROCS(int(cfg.NumCPU))
 
-	data := files.NewFileCollection(cfg.Pagination.MaxKeys)
-
 	if err = client.CheckBucket(ctx); err != nil {
 		log.Fatal(err)
 	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err = manager.DownloadFiles(ctx, data); err != nil {
-			log.Println(err)
-		}
-	}()
-
-	if err = client.ListObjects(ctx, data, cache); err != nil {
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	data, err := client.ListObjects(ctx, cache)
+	if err != nil {
 		log.Fatal(err)
 	}
-
+	// }()
 	cache.Clear()
+	datas3 := files.NewFileCollection(cfg.Pagination.MaxKeys)
 
-	wg.Wait()
-	memstat(data)
+	if err = manager.DownloadFiles(ctx, data, datas3); err != nil {
+		log.Println(err)
+	}
+
+	// wg.Wait()
+	// fmt.Scanln()
+	memstat(datas3)
 	fmt.Printf("Programm running total %s", time.Since(runTime))
 	runtime.GC() // get up-to-date statistics
 	pprof.WriteHeapProfile(f)

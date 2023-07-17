@@ -118,23 +118,26 @@ func (client *Client) CheckBucket(ctx context.Context) error {
 
 // ListObjects lists objects from the bucket specified in the configuration and
 // sends them to be processed.
-func (client *Client) ListObjects(ctx context.Context, data *files.FileCollection, cache *cacher.FileCache) error {
+func (client *Client) ListObjects(ctx context.Context, cache *cacher.FileCache) (map[string]*files.File, error) {
 	start := time.Now()
-	if err := client.processPages(ctx, data, cache); err != nil {
-		return err
+	s3Data := make(map[string]*files.File)
+	if err := client.processPages(ctx, s3Data, cache); err != nil {
+		return nil, err
 	}
-	fmt.Printf("\u001B[2K\nRecive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
-	return nil
+	// close(data.DownloadChan)
+
+	fmt.Printf("\u001B[2K\nRecive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", len(s3Data), time.Since(start))
+	return s3Data, nil
 }
 
 // processPages processes pages of results returned by the paginator and sends items to be processed.
-func (client *Client) processPages(ctx context.Context, data *files.FileCollection, cache *cacher.FileCache) error {
+func (client *Client) processPages(ctx context.Context, data map[string]*files.File, cache *cacher.FileCache) error {
 	paginator := s3.NewListObjectsV2Paginator(client, client.input, func(o *s3.ListObjectsV2PaginatorOptions) {
 		o.StopOnDuplicateToken = true
 	})
 
 	pool := NewWorkerPool(int(client.cfg.Pagination.MaxKeys), func(object types.Object) {
-		client.sendObjectsToChannel(object, data, cache)
+		client.sendObjectsToMap(object, data, cache)
 	})
 	if client.maxPages == 0 {
 		client.maxPages = -1
@@ -153,11 +156,24 @@ func (client *Client) processPages(ctx context.Context, data *files.FileCollecti
 		}
 
 		client.pagesCount++
-		// fmt.Printf("Page %d\n", client.pagesCount)
+		fmt.Printf("\rPage %d", client.pagesCount)
 	}
-	pool.Wait()
-	close(data.DownloadChan)
+	pool.WaitObjects()
+
 	return nil
+}
+
+// sendObjectsToChannel sends items to be processed through the objectsChan channel.
+func (client *Client) sendObjectsToMap(object types.Object, data map[string]*files.File, cache *cacher.FileCache) {
+	if name, valid := client.isValidObject(object); valid {
+		etag := strings.Trim(*object.ETag, "\"")
+		downloaded := cache.HasFile(name, etag, object.Size)
+		if !downloaded {
+			file := files.NewFileFromObject(object)
+			data[name] = file
+		}
+		cache.RemoveFile(name)
+	}
 }
 
 // sendObjectsToChannel sends items to be processed through the objectsChan channel.

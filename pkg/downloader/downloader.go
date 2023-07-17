@@ -45,10 +45,19 @@ func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *D
 	return downloader
 }
 
-func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.FileCollection) error {
+func (downloader *Downloader) DownloadFiles(ctx context.Context, s3Data map[string]*files.File, data *files.FileCollection) error {
 	activeFiles := &sync.Map{}
 	start := time.Now()
+
 	go downloader.printer.StartProgressTicker(ctx, data, activeFiles, start)
+
+	go func() {
+		for name, file := range s3Data {
+			data.Add(file)
+			delete(s3Data, name)
+		}
+		close(data.DownloadChan)
+	}()
 
 	for i := 0; i < downloader.cfg.GetDownloaders(); i++ {
 		downloader.wg.Add(1)

@@ -9,7 +9,7 @@ import (
 type FileCache struct {
 	Files      map[string]*files.File
 	totalCount uint32
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	withParts  bool
 	TotalSize  int64
 }
@@ -36,8 +36,8 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 }
 
 func (c *FileCache) HasFile(key, etag string, size int64) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	cachedInfo, ok := c.Files[key]
 
