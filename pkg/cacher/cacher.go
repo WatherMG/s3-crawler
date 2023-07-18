@@ -72,7 +72,6 @@ func (c *FileCache) processFile(path string, chunkSize int64) {
 		file.ETag = etag
 		file.Size = info.Size()
 		c.AddFile(info.Name(), file)
-		c.TotalSize += file.Size
 	}
 }
 

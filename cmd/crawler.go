@@ -78,24 +78,23 @@ func main() {
 	if err = client.CheckBucket(ctx); err != nil {
 		log.Fatal(err)
 	}
+	data := files.NewFileCollection(cfg.Pagination.MaxKeys)
 	// wg.Add(1)
 	// go func() {
 	// 	defer wg.Done()
-	data, err := client.ListObjects(ctx, cache)
-	if err != nil {
+	if err = client.ListObjects(ctx, data, cache); err != nil {
 		log.Fatal(err)
 	}
 	// }()
 	cache.Clear()
-	datas3 := files.NewFileCollection(cfg.Pagination.MaxKeys)
 
-	if err = manager.DownloadFiles(ctx, data, datas3); err != nil {
+	if err = manager.DownloadFiles(ctx, data); err != nil {
 		log.Println(err)
 	}
 
 	// wg.Wait()
 	// fmt.Scanln()
-	memstat(datas3)
+	memstat(data)
 	fmt.Printf("Programm running total %s", time.Since(runTime))
 	runtime.GC() // get up-to-date statistics
 	pprof.WriteHeapProfile(f)

@@ -26,7 +26,7 @@ import (
 type Downloader struct {
 	cfg *configuration.Configuration
 	*s3client.Client
-	wg      *sync.WaitGroup
+	wg      sync.WaitGroup
 	printer printprogress.ProgressPrinter
 }
 
@@ -38,28 +38,23 @@ func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *D
 		downloader = &Downloader{
 			Client:  client,
 			cfg:     cfg,
-			wg:      &sync.WaitGroup{},
+			wg:      sync.WaitGroup{},
 			printer: printprogress.NewPrinter(cfg),
 		}
 	})
 	return downloader
 }
 
-func (downloader *Downloader) DownloadFiles(ctx context.Context, s3Data map[string]*files.File, data *files.FileCollection) error {
+func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.FileCollection) error {
 	activeFiles := &sync.Map{}
 	start := time.Now()
+	workers := downloader.cfg.GetDownloaders()
+	data.DownloadChan = make(chan *files.File, workers)
 
 	go downloader.printer.StartProgressTicker(ctx, data, activeFiles, start)
+	go data.GetDataToDownload()
 
-	go func() {
-		for name, file := range s3Data {
-			data.Add(file)
-			delete(s3Data, name)
-		}
-		close(data.DownloadChan)
-	}()
-
-	for i := 0; i < downloader.cfg.GetDownloaders(); i++ {
+	for i := 0; i < workers; i++ {
 		downloader.wg.Add(1)
 		go func() {
 			defer downloader.wg.Done()

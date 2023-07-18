@@ -8,36 +8,48 @@ import (
 // FileCollection represents a collection of File objects.
 type FileCollection struct {
 	DownloadChan    chan *File // DownloadChan is a channel of File objects.
-	DownloadMap     map[string]*File
-	totalBytes      int64  // totalBytes is the total number of bytes in the DownloadChan collection.
-	count           uint32 // count is the current count of objects in the DownloadChan collection.
-	progress        int64  // progress is the current sum of a bytes downloaded from bucket
+	totalBytes      int64      // totalBytes is the total number of bytes in the DownloadChan collection.
+	count           uint32     // count is the current count of objects in the DownloadChan collection.
+	progress        int64      // progress is the current sum of a bytes downloaded from bucket
 	progressMap     map[*File]int64
 	downloadedFiles map[*File]bool
-	mu              sync.Mutex
+	mu              sync.RWMutex
+	wg              sync.WaitGroup
 }
 
 // NewFileCollection returns a new instance of the FileCollection structure with the specified capacity.
 func NewFileCollection(capacity uint16) *FileCollection {
 	return &FileCollection{
-		DownloadChan:    make(chan *File, capacity),
-		DownloadMap:     make(map[string]*File),
 		progressMap:     make(map[*File]int64),
 		downloadedFiles: make(map[*File]bool),
+		mu:              sync.RWMutex{},
+		wg:              sync.WaitGroup{},
 	}
-}
-func (fc *FileCollection) Lock() {
-	fc.mu.Lock()
-}
-func (fc *FileCollection) Unlock() {
-	fc.mu.Unlock()
 }
 
 // Add adds a file to the collection and updates the total bytes and count.
 func (fc *FileCollection) Add(file *File) {
 	fc.DownloadChan <- file
+}
+
+func (fc *FileCollection) GetDataToDownload() {
+	fc.wg.Add(len(fc.progressMap))
+	fc.mu.RLock()
+	for file := range fc.progressMap {
+		go func(file *File) {
+			defer fc.wg.Done()
+			fc.DownloadChan <- file
+		}(file)
+	}
+	fc.mu.RUnlock()
+	fc.wg.Wait()
+	close(fc.DownloadChan)
+}
+
+func (fc *FileCollection) AddToProgress(file *File) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	fc.progressMap[file] = 0
 	fc.totalBytes += file.Size
 	fc.count++
 }

@@ -33,6 +33,7 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 	defer c.mu.Unlock()
 	c.Files[key] = info
 	c.totalCount++
+	c.TotalSize += info.Size
 }
 
 func (c *FileCache) HasFile(key, etag string, size int64) bool {
