@@ -16,7 +16,6 @@ type WorkerPool struct {
 }
 
 type ObjectProcessor func(object types.Object)
-type FileProcessor func(file *files.File)
 
 func NewWorkerPool(maxWorkers int, processor ObjectProcessor) *WorkerPool {
 	pool := &WorkerPool{
@@ -36,35 +35,11 @@ func NewWorkerPool(maxWorkers int, processor ObjectProcessor) *WorkerPool {
 	return pool
 }
 
-func NewWorkerPoolFile(maxWorkers int, processor FileProcessor) *WorkerPool {
-	pool := &WorkerPool{
-		files: make(chan *files.File, maxWorkers),
-	}
-	pool.wg.Add(maxWorkers)
-	for i := 0; i < maxWorkers; i++ {
-		go func() {
-			defer pool.wg.Done()
-			for file := range pool.files {
-				processor(file)
-			}
-		}()
-	}
-	return pool
-}
-
-func (pool *WorkerPool) Add(file *files.File) {
-	pool.files <- file
-}
-
 func (pool *WorkerPool) AddFileFromObject(object types.Object) {
 	pool.objects <- object
 }
 
 func (pool *WorkerPool) WaitObjects() {
 	close(pool.objects)
-	pool.wg.Wait()
-}
-func (pool *WorkerPool) WaitFiles() {
-	close(pool.files)
 	pool.wg.Wait()
 }

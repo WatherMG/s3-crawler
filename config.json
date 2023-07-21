@@ -14,7 +14,7 @@
   "pagination": {
     "maxKeys": 1000,
     "maxPages": 0,
-    "chunkSize": 0
+    "chunkSizeMB": 0
   },
   "numCPU": 16,
   "downloaders": 0,

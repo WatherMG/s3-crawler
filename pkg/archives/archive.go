@@ -9,13 +9,14 @@ import (
 	"strings"
 	"sync"
 
+	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/utils"
 )
 
 var supportedArchiveExtensions = []string{".gz", ".gzip"}
 
-type Archive interface {
+type Archiver interface {
 	Decompress(destination string) error
 }
 
@@ -80,8 +81,8 @@ func (z Zip) Decompress(destination string) error {
 	return nil
 }
 
-func DecompressFile(path, destination string) error {
-	var archive Archive
+func decompress(path, destination string) error {
+	var archive Archiver
 	if err := utils.CreatePath(destination); err != nil {
 		return err
 	}
@@ -92,6 +93,27 @@ func DecompressFile(path, destination string) error {
 	default:
 		return fmt.Errorf("unsupported archive type")
 	}
+}
+func DecompressFile(path string, cfg *configuration.Configuration) error {
+	fileName := filepath.Base(path)
+	if !IsSupportedArchive(fileName) {
+		return fmt.Errorf("unsupported achive: %s", filepath.Ext(fileName))
+	}
+	var decompressedPath string
+	if cfg.IsWithDirName {
+		decompressedPath = filepath.Join(cfg.LocalPath, "decompressed", fileName)
+	} else {
+		decompressedPath = filepath.Join(cfg.LocalPath, "decompressed")
+	}
+	if err := decompress(path, decompressedPath); err != nil {
+		return err
+	}
+	if cfg.IsDeleteAfterDecompress {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func IsSupportedArchive(name string) bool {

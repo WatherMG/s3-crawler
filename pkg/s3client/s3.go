@@ -21,6 +21,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+const (
+	timeout     = 3 * time.Second
+	maxAttempts = 3
+)
+
 // Client represents an S3 client.
 type Client struct {
 	*s3.Client
@@ -74,7 +79,9 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 				"",
 			)),
 			config.WithRegion(cfg.S3Connection.Region), // The region to use for the S3 service.
-			config.WithRetryMaxAttempts(8),
+			config.WithClientLogMode(aws.LogRetries),
+			config.WithRetryMode(aws.RetryModeStandard),
+			config.WithRetryMaxAttempts(0),
 		)
 		if err != nil {
 			log.Fatal(err)
@@ -87,21 +94,27 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 
 // CheckBucket checks if the bucket specified in the configuration exists and is accessible.
 func (client *Client) CheckBucket(ctx context.Context) error {
-	if client.cfg.BucketName == "" {
-		return errors.New("s3.CheckBucket: bucketName is required")
-	}
-	input := &s3.HeadBucketInput{
-		Bucket: aws.String(client.cfg.BucketName),
-	}
+	err := client.doRequestWithRetry(ctx, func(reqCtx context.Context) error {
+		input := &s3.HeadBucketInput{
+			Bucket: aws.String(client.cfg.BucketName),
+		}
 
-	_, err := client.HeadBucket(ctx, input)
+		_, err := client.HeadBucket(reqCtx, input)
+		return err
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get bucket, %w", err)
+		return err
 	}
-
 	log.Printf("Bucket exist: %s", client.cfg.BucketName)
 
-	resp, err := client.GetBucketAccelerateConfiguration(ctx, &s3.GetBucketAccelerateConfigurationInput{Bucket: aws.String(client.cfg.BucketName)})
+	var resp *s3.GetBucketAccelerateConfigurationOutput
+	err = client.doRequestWithRetry(ctx, func(reqCtx context.Context) error {
+		var err error
+		resp, err = client.GetBucketAccelerateConfiguration(reqCtx, &s3.GetBucketAccelerateConfigurationInput{
+			Bucket: aws.String(client.cfg.BucketName),
+		})
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("failed to get bucket accelerate configuration, %w", err)
 	}
@@ -123,9 +136,9 @@ func (client *Client) ListObjects(ctx context.Context, data *files.FileCollectio
 	if err := client.processPages(ctx, cache, data); err != nil {
 		return err
 	}
-	// close(data.DownloadChan)
 
-	fmt.Printf("\u001B[2K\nRecive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
+	fmt.Printf("Recive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
+	cache.Clear()
 	return nil
 }
 
@@ -135,54 +148,60 @@ func (client *Client) processPages(ctx context.Context, cache *cacher.FileCache,
 		o.StopOnDuplicateToken = true
 	})
 
-	pool := NewWorkerPool(int(client.cfg.Pagination.MaxKeys), func(object types.Object) {
-		client.sendObjectsToMap(object, cache, data)
-	})
 	if client.maxPages == 0 {
 		client.maxPages = -1
 	}
 
 	for paginator.HasMorePages() && client.maxPages != client.pagesCount {
-		page, err := paginator.NextPage(ctx, func(o *s3.Options) {
-			o.UseAccelerate = client.acceleration
-		})
+		page, err := client.getPageWithRetry(ctx, paginator)
 		if err != nil {
 			return fmt.Errorf("paginator error: %w", err)
 		}
 
 		for _, object := range page.Contents {
-			pool.AddFileFromObject(object)
+			client.sendObjectsToMap(object, cache, data)
 		}
 
 		client.pagesCount++
 		fmt.Printf("\rPage %d", client.pagesCount)
 	}
-	pool.WaitObjects()
 
 	return nil
 }
 
-// sendObjectsToChannel sends items to be processed through the objectsChan channel.
+func (client *Client) getPageWithRetry(ctx context.Context, paginator *s3.ListObjectsV2Paginator) (page *s3.ListObjectsV2Output, err error) {
+	err = client.doRequestWithRetry(ctx, func(reqCtx context.Context) error {
+		page, err = paginator.NextPage(reqCtx, func(o *s3.Options) {
+			o.UseAccelerate = client.acceleration
+		})
+		return err
+	})
+	return page, err
+}
+
+func (client *Client) doRequestWithRetry(ctx context.Context, f func(context.Context) error) error {
+	var err error
+	for i := 0; i < maxAttempts; i++ {
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		err = f(reqCtx)
+		cancel()
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			break
+		}
+		log.Printf("Request timed out, retrying... (attempt %d/%d)", i+1, maxAttempts)
+		time.Sleep(1 * time.Second)
+	}
+	return err
+}
+
+// sendObjectsToMap verify items and sends it's in the progressMap.
 func (client *Client) sendObjectsToMap(object types.Object, cache *cacher.FileCache, data *files.FileCollection) {
 	if name, valid := client.isValidObject(object); valid {
 		etag := strings.Trim(*object.ETag, "\"")
 		downloaded := cache.HasFile(name, etag, object.Size)
 		if !downloaded {
-			file := files.NewFileFromObject(object)
+			file := files.NewFileFromObject(object, client.cfg.LocalPath)
 			data.AddToProgress(file)
-		}
-		cache.RemoveFile(name)
-	}
-}
-
-// sendObjectsToChannel sends items to be processed through the objectsChan channel.
-func (client *Client) sendObjectsToChannel(object types.Object, data *files.FileCollection, cache *cacher.FileCache) {
-	if name, valid := client.isValidObject(object); valid {
-		etag := strings.Trim(*object.ETag, "\"")
-		downloaded := cache.HasFile(name, etag, object.Size)
-		if !downloaded {
-			file := files.NewFileFromObject(object)
-			data.Add(file)
 		}
 		cache.RemoveFile(name)
 	}

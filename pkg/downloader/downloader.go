@@ -6,8 +6,8 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"s3-crawler/pkg/archives"
@@ -26,8 +26,10 @@ import (
 type Downloader struct {
 	cfg *configuration.Configuration
 	*s3client.Client
-	wg      sync.WaitGroup
-	printer printprogress.ProgressPrinter
+	wg                  sync.WaitGroup
+	smallFileDownloader *manager.Downloader
+	printer             printprogress.ProgressPrinter
+	activeFiles         atomic.Int32
 }
 
 var downloader *Downloader
@@ -40,34 +42,42 @@ func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *D
 			cfg:     cfg,
 			wg:      sync.WaitGroup{},
 			printer: printprogress.NewPrinter(cfg),
+			smallFileDownloader: manager.NewDownloader(client, func(d *manager.Downloader) {
+				d.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.Buffer32KB)
+			}),
 		}
 	})
 	return downloader
 }
 
 func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.FileCollection) error {
-	activeFiles := &sync.Map{}
 	start := time.Now()
 	workers := downloader.cfg.GetDownloaders()
 	data.DownloadChan = make(chan *files.File, workers)
+	data.ArchivesChan = make(chan string, workers)
 
-	go downloader.printer.StartProgressTicker(ctx, data, activeFiles, start)
-	go data.GetDataToDownload()
+	go downloader.printer.StartProgressTicker(ctx, data, start, &downloader.activeFiles)
 
 	for i := 0; i < workers; i++ {
 		downloader.wg.Add(1)
 		go func() {
 			defer downloader.wg.Done()
 			for file := range data.DownloadChan {
-				if err := downloader.downloadFile(ctx, file, data, activeFiles); err != nil {
+				err := downloader.downloadFile(ctx, file, data)
+				if err != nil {
 					log.Printf("Download error: %v", err)
-					return
+					continue
 				}
+				file.ReturnToPool()
 			}
 		}()
 	}
 
+	data.GetDataToDownload()
+	close(data.DownloadChan)
+
 	downloader.wg.Wait()
+	close(data.ArchivesChan)
 
 	elapsed := time.Since(start)
 	_, _, _, bytes, _, averageSpeed, _ := data.GetStatistics(elapsed)
@@ -75,67 +85,38 @@ func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Fil
 	fmt.Print("\u001B[2K\r")
 	if data.Count() > 0 {
 		result := fmt.Sprintf("Downloaded all files in %s. Total filesize: %s\n", elapsed, utils.FormatBytes(bytes))
-		result += fmt.Sprintf("Average speed = %s\n", utils.FormatBytes(int64(averageSpeed)))
+		result += fmt.Sprintf("Average speed = %s/s\n", utils.FormatBytes(int64(averageSpeed)))
 		fmt.Print(result)
 	} else {
 		fmt.Printf("Nothing to download. Exit...\n")
 	}
-
 	return nil
 }
 
-func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File, data *files.FileCollection, activeFiles *sync.Map) error {
-	activeFiles.Store(file.Name, true)
-	defer activeFiles.Delete(file.Name)
-	defer file.ReturnToPool()
+func (downloader *Downloader) downloadFile(ctx context.Context, file *files.File, data *files.FileCollection) error {
+	downloader.activeFiles.Add(1)
+	defer downloader.activeFiles.Add(-1)
 
-	path := downloader.getFilePath(file)
-	destinationFile, err := os.Create(path)
+	destinationFile, err := os.Create(file.Path)
 	if err != nil {
-		return err
+		return fmt.Errorf("file: %s, path: %s: %w", file, file.Path, err)
 	}
 	defer destinationFile.Close()
 
 	pw := &progressWriterAt{
-		writer:   destinationFile,
-		fileSize: file.Size,
+		writer: destinationFile,
 		callback: func(n int64) {
-			data.UpdateProgress(file, n)
+			data.UpdateProgress(n)
 		},
 	}
 	if err = downloader.download(ctx, file, pw); err != nil {
 		return err
 	}
 
+	data.MarkAsDownloaded(file.Name)
+
 	if downloader.cfg.IsDecompress && file.IsArchive() && archives.IsSupportedArchive(file.Name) {
-		if err = downloader.decompressFile(destinationFile, path, file); err != nil {
-			return err
-		}
-	}
-	data.MarkAsDownloaded(file)
-
-	return nil
-}
-
-func (downloader *Downloader) getFilePath(file *files.File) string {
-	return filepath.Join(downloader.cfg.LocalPath, file.Name)
-}
-
-func (downloader *Downloader) decompressFile(destinationFile *os.File, path string, file *files.File) error {
-	destinationFile.Close()
-	var decompressedPath string
-	if downloader.cfg.IsWithDirName {
-		decompressedPath = filepath.Join(downloader.cfg.LocalPath, "decompressed", file.Name)
-	} else {
-		decompressedPath = filepath.Join(downloader.cfg.LocalPath, "decompressed")
-	}
-	if err := archives.DecompressFile(path, decompressedPath); err != nil {
-		return err
-	}
-	if downloader.cfg.IsDeleteAfterDecompress {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
+		data.ArchivesChan <- file.Path
 	}
 	return nil
 }
@@ -145,50 +126,43 @@ func (downloader *Downloader) download(ctx context.Context, file *files.File, w 
 		Bucket: aws.String(downloader.cfg.BucketName),
 		Key:    aws.String(file.Key),
 	}
-	newDownloader := downloader.createDownloader(file.Size)
 
-	_, err := newDownloader.Download(ctx, w, input)
+	chunkSize := downloader.cfg.GetChunkSize()
+
+	var currentDownloader *manager.Downloader
+	if file.Size <= chunkSize {
+		currentDownloader = downloader.smallFileDownloader
+	} else {
+		currentDownloader = downloader.createDownloader(file.Size, chunkSize)
+	}
+
+	_, err := currentDownloader.Download(ctx, w, input)
 	if err != nil {
-		return err
+		return fmt.Errorf("download error for file: %s, error: %w", file.Name, err)
 	}
 
 	return nil
 }
 
-func (downloader *Downloader) createDownloader(fileSize int64) *manager.Downloader {
+func (downloader *Downloader) createDownloader(fileSize int64, chuckSize int64) *manager.Downloader {
 	newDownloader := manager.NewDownloader(downloader, func(d *manager.Downloader) {
 		d.Logger = logging.NewStandardLogger(os.Stdout)
 	})
 
-	parts, partSize, bufferSize, maxRetries := downloader.getDownloadParts(fileSize)
+	parts := downloader.getDownloadParts(fileSize, chuckSize)
 
-	newDownloader.PartSize = partSize
-	newDownloader.Concurrency = int(parts)
-	if bufferSize != 0 {
-		newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(bufferSize)
-	}
-	newDownloader.PartBodyMaxRetries = maxRetries
+	newDownloader.PartSize = chuckSize
+	newDownloader.Concurrency = parts
+	newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.MiB)
+	newDownloader.PartBodyMaxRetries = 3
 
 	return newDownloader
 }
 
-func (downloader *Downloader) getDownloadParts(fileSize int64) (int64, int64, int, int) {
-	var parts, partSize int64
-	var bufferSize, maxRetries int
-	chunkSize := downloader.cfg.GetChunkSize()
-	if fileSize <= chunkSize {
-		parts = 1
-		partSize = fileSize
-		bufferSize = files.Buffer32KB
-		maxRetries = 1
-	} else {
-		parts = fileSize / chunkSize
-		if fileSize%chunkSize != 0 {
-			parts++
-		}
-		partSize = chunkSize
-		bufferSize = files.MiB
-		maxRetries = 5
+func (downloader *Downloader) getDownloadParts(fileSize, chunkSize int64) int {
+	parts := fileSize / chunkSize
+	if fileSize%chunkSize != 0 {
+		parts++
 	}
-	return parts, partSize, bufferSize, maxRetries
+	return int(parts)
 }

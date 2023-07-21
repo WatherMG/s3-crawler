@@ -1,18 +1,23 @@
 package files
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"s3-crawler/pkg/utils"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 const (
-	Buffer8KB = 1 << 12 << iota
+	Buffer8KB = 1 << (13 + iota)
 	Buffer16KB
 	Buffer32KB
 	Buffer64KB
+	Buffer128KB
+	Buffer256KB
 	KiB = 1 << 10
 	MiB = 1 << 20
 )
@@ -22,12 +27,13 @@ var archives map[string]bool
 
 func init() {
 	archives = map[string]bool{
-		".zip": true,
-		".rar": true,
-		".tar": true,
-		".gz":  true,
-		".bz2": true,
-		".7z":  true,
+		".zip":  false,
+		".rar":  false,
+		".tar":  false,
+		".gz":   true,
+		".gzip": true,
+		".bz2":  false,
+		".7z":   false,
 	}
 }
 
@@ -37,7 +43,16 @@ type File struct {
 	Name      string // Name is the name of the file.
 	ETag      string // ETag is the ETag of the file.
 	Extension string
-	Size      int64 // Size is the size of the file in bytes.
+	Path      string // Path to save file
+	Size      int64  // Size is the size of the file in bytes.
+}
+
+func (f *File) String() string {
+	var buf = &strings.Builder{}
+	buf.WriteRune('[')
+	buf.WriteString(fmt.Sprintf("Key: %s, ", f.Key))
+	buf.WriteString(fmt.Sprintf("Size: %s]", utils.FormatBytes(f.Size)))
+	return buf.String()
 }
 
 // filePool is a pool of File objects for reuse.
@@ -48,7 +63,7 @@ var filePool = sync.Pool{
 }
 
 // NewFileFromObject creates a new File objects from the given S3 object.
-func NewFileFromObject(obj types.Object) *File {
+func NewFileFromObject(obj types.Object, localPath string) *File {
 	file := filePool.Get().(*File)
 	file.reset()
 	file.Key = *obj.Key
@@ -56,6 +71,7 @@ func NewFileFromObject(obj types.Object) *File {
 	file.Size = obj.Size
 	file.ETag = strings.Trim(*obj.ETag, "\"")
 	file.Extension = filepath.Ext(file.Name)
+	file.Path = filepath.Join(localPath, file.Name)
 
 	return file
 }

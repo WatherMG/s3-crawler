@@ -13,8 +13,16 @@ import (
 )
 
 const (
-	DownloadersModifier uint16 = 1 << 9
-	ChunkSize                  = 8 * files.MiB
+	DownloadersModifier uint16 = 1 << 5
+	maxGoroutines       uint16 = 512
+	defaultGoroutines   uint16 = 128
+	midCPUThresh        uint8  = 16
+
+	defaultDelay   = 1000
+	defaultBarSize = 20
+
+	defaultMaxKeys = 1000
+	ChunkSizeMB    = 8
 )
 
 // Configuration holds settings for connecting to S3 and downloading files.
@@ -49,7 +57,7 @@ type S3ConnectionConfig struct {
 type PaginationConfig struct {
 	// ChunkSize is the size of the chunks used when calculating the hash of a local file and when downloading large files.
 	// This size is also used by the AWS S3 CLI when uploading or syncing files, and determines the hash calculated on the S3 bucket.
-	ChunkSize int64  `json:"chunkSize,omitempty"`
+	ChunkSize int64  `json:"chunkSizeMB,omitempty"`
 	MaxPages  uint16 `json:"maxPages,omitempty"` // MaxPages is the maximum number of pages to retrieve.
 	MaxKeys   uint16 `json:"maxKeys,omitempty"`  // MaxKeys is the maximum number of keys per page.
 }
@@ -63,15 +71,13 @@ type Progress struct {
 
 func NewConfiguration() *Configuration {
 	return &Configuration{
-		LocalPath:   "/tmp/crawler",
-		NumCPU:      0,
-		Downloaders: 0,
+		LocalPath: "/tmp/crawler",
 		Pagination: PaginationConfig{
-			MaxKeys: 1000,
+			MaxKeys: defaultMaxKeys,
 		},
 		Progress: Progress{
-			Delay:   500,
-			BarSize: 20,
+			Delay:   defaultDelay,
+			BarSize: defaultBarSize,
 		},
 	}
 }
@@ -107,7 +113,7 @@ func LoadConfig(filename string) (*Configuration, error) {
 		log.Printf("Use default local path: %s\n", cfg.LocalPath)
 	}
 	if cfg.Pagination.MaxKeys <= 0 {
-		cfg.Pagination.MaxKeys = 1000
+		cfg.Pagination.MaxKeys = defaultMaxKeys
 	}
 	if cfg.NumCPU <= 0 {
 		cfg.NumCPU = uint8(runtime.NumCPU())
@@ -135,6 +141,26 @@ func (config *Configuration) GetMaxFileSize() int64 {
 	return 0
 }
 
+func (config *Configuration) calcGoroutinesForCores(cores uint8) uint16 {
+	switch {
+	case cores == 1:
+		return defaultGoroutines >> 1
+	case cores >= 1 && cores < midCPUThresh:
+		if cores >= 2 && cores <= 7 {
+			return defaultGoroutines
+		}
+		return defaultGoroutines << 1
+	case cores >= midCPUThresh:
+		if config.IsDecompress {
+			return defaultGoroutines<<1 + (defaultGoroutines<<1)>>1
+		}
+		return maxGoroutines
+	default:
+		log.Printf("Invalid numCPU, setting to default goroutines: %d\n", defaultGoroutines)
+		return defaultGoroutines
+	}
+}
+
 func (config *Configuration) GetDownloaders() int {
 	return int(config.Downloaders)
 }
@@ -142,23 +168,24 @@ func (config *Configuration) GetDownloaders() int {
 func (config *Configuration) validateDownloaders() {
 	switch {
 	case config.Downloaders == 0:
-		config.Downloaders = uint16(config.NumCPU) * DownloadersModifier
+		config.Downloaders = config.calcGoroutinesForCores(config.NumCPU)
 		log.Printf("Downloaders value not provided, using default value: %d\n", config.Downloaders)
-	case config.Downloaders > 10000:
-		config.Downloaders = 10000
+	case config.Downloaders > 9000:
+		config.Downloaders = maxGoroutines
 		log.Printf("Invalid value of Downloaders provided, using max value: %d\n", config.Downloaders)
 	}
 }
+
 func (config *Configuration) validateChunkSize() {
 	switch {
 	case config.Pagination.ChunkSize == 0:
-		config.Pagination.ChunkSize = ChunkSize
-		log.Printf("ChunkSize value not provided, using default value: %s\n", utils.FormatBytes(config.Pagination.ChunkSize))
+		config.Pagination.ChunkSize = ChunkSizeMB
+		log.Printf("ChunkSizeMB value not provided, using default value: %s\n", utils.FormatBytes(config.Pagination.ChunkSize))
 	case config.Pagination.ChunkSize < 0:
-		config.Pagination.ChunkSize = ChunkSize
-		log.Printf("Invalid value of ChunkSize provided, using default value: %s\n", utils.FormatBytes(config.Pagination.ChunkSize))
+		config.Pagination.ChunkSize = ChunkSizeMB
+		log.Printf("Invalid value of ChunkSizeMB provided, using default value: %s\n", utils.FormatBytes(config.Pagination.ChunkSize))
 	}
 }
 func (config *Configuration) GetChunkSize() int64 {
-	return config.Pagination.ChunkSize
+	return config.Pagination.ChunkSize * files.MiB
 }

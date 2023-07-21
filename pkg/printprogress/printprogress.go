@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"s3-crawler/pkg/configuration"
@@ -15,7 +15,7 @@ import (
 // ProgressPrinter provides an interface for printing progress.
 type ProgressPrinter interface {
 	PrintProgress(count, downloadedCount uint32, totalBytes, progressBytes int64, averageSpeed, progressRatio float64, activeDownloads int)
-	StartProgressTicker(ctx context.Context, data *files.FileCollection, activeFiles *sync.Map, start time.Time)
+	StartProgressTicker(ctx context.Context, data *files.FileCollection, start time.Time, activeDownloads *atomic.Int32)
 }
 
 // TextProgressPrinter uses simple text to print the progress.
@@ -110,17 +110,15 @@ func printProgress(prefix string, count, downloadedCount uint32, totalBytes, pro
 	fmt.Printf("\u001B[2K\r%s", result)
 }
 
-func (tpp *TextProgressPrinter) StartProgressTicker(ctx context.Context, data *files.FileCollection, activeFiles *sync.Map, start time.Time) {
-	// The duplicated logic from ProgressTicker moved here
-	progressTicker(ctx, data, activeFiles, start, tpp.Delay, tpp)
+func (tpp *TextProgressPrinter) StartProgressTicker(ctx context.Context, data *files.FileCollection, start time.Time, activeDownloads *atomic.Int32) {
+	progressTicker(ctx, data, start, activeDownloads, tpp.Delay, tpp)
 }
 
-func (gpp *GraphicalProgressPrinter) StartProgressTicker(ctx context.Context, data *files.FileCollection, activeFiles *sync.Map, start time.Time) {
-	// The duplicated logic from ProgressTicker moved here
-	progressTicker(ctx, data, activeFiles, start, gpp.Delay, gpp)
+func (gpp *GraphicalProgressPrinter) StartProgressTicker(ctx context.Context, data *files.FileCollection, start time.Time, activeDownloads *atomic.Int32) {
+	progressTicker(ctx, data, start, activeDownloads, gpp.Delay, gpp)
 }
 
-func progressTicker(ctx context.Context, data *files.FileCollection, activeFiles *sync.Map, start time.Time, delay time.Duration, printer ProgressPrinter) {
+func progressTicker(ctx context.Context, data *files.FileCollection, start time.Time, activeDownloads *atomic.Int32, delay time.Duration, printer ProgressPrinter) {
 	if delay < 100 {
 		delay = 250
 	}
@@ -131,15 +129,9 @@ func progressTicker(ctx context.Context, data *files.FileCollection, activeFiles
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			activeDownloads := 0
-			activeFiles.Range(func(_, b any) bool {
-				if b == true {
-					activeDownloads++
-				}
-				return true
-			})
+			downloads := activeDownloads.Load()
 			switch {
-			case activeDownloads > 0:
+			case downloads > 0:
 				count, downloadedCount, _, totalBytes, progressBytes, averageSpeed, progressRatio := data.GetStatistics(time.Since(start))
 				printer.PrintProgress(
 					count,
@@ -148,10 +140,10 @@ func progressTicker(ctx context.Context, data *files.FileCollection, activeFiles
 					progressBytes,
 					averageSpeed,
 					progressRatio,
-					activeDownloads,
+					int(downloads),
 				)
 			default:
-				if data.DownloadChan != nil && activeDownloads == 0 {
+				if data.DownloadChan != nil && downloads == 0 {
 					for _, r := range `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` {
 						fmt.Printf("\u001B[2K\r%c Waiting metadata to download from bucket.", r)
 						time.Sleep(delay)

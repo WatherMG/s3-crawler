@@ -22,7 +22,7 @@ import (
 func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	start := time.Now()
 	numWorkers := cfg.NumCPU
-	filesChan := make(chan string, cfg.NumCPU)
+	filesChan := make(chan string, numWorkers)
 	extensions := strings.Split(cfg.Extension, ",")
 	nameMask := strings.ToLower(cfg.NameMask)
 	chunkSize := cfg.GetChunkSize()
@@ -35,8 +35,8 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 	close(filesChan)
 	wg.Wait()
 
-	log.Printf("Cache loaded from %s.\n", time.Since(start))
-	log.Printf("Total files in cache: %d. Total size %s.\n", c.totalCount, utils.FormatBytes(c.TotalSize))
+	c.loadTime = time.Since(start)
+	log.Print("Cache info: ", c)
 
 	return err
 }

@@ -1,9 +1,13 @@
 package cacher
 
 import (
+	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/utils"
 )
 
 type FileCache struct {
@@ -11,7 +15,8 @@ type FileCache struct {
 	totalCount uint32
 	mu         sync.RWMutex
 	withParts  bool
-	TotalSize  int64
+	totalSize  int64
+	loadTime   time.Duration
 }
 
 var fileCache *FileCache // fileCache is a pointer to the singleton instance of the FileCache structure.
@@ -33,7 +38,7 @@ func (c *FileCache) AddFile(key string, info *files.File) {
 	defer c.mu.Unlock()
 	c.Files[key] = info
 	c.totalCount++
-	c.TotalSize += info.Size
+	c.totalSize += info.Size
 }
 
 func (c *FileCache) HasFile(key, etag string, size int64) bool {
@@ -66,4 +71,18 @@ func (c *FileCache) Clear() {
 	}
 
 	c.totalCount = 0
+}
+
+// String implements the fmt.Stringer interface and provides a custom string representation of the FileCache structure.
+func (c *FileCache) String() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var b strings.Builder
+	// Total number of files in the cache
+	fmt.Fprintf(&b, "Files: %d. ", c.totalCount)
+	// Total size of files in the cache
+	fmt.Fprintf(&b, "Total size: %s. ", utils.FormatBytes(c.totalSize))
+	// Load time of files in the cache
+	fmt.Fprintf(&b, "Loaded in: %s\n", c.loadTime.Truncate(time.Millisecond))
+	return b.String()
 }
