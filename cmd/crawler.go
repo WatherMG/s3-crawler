@@ -153,6 +153,6 @@ func memstat(data *files.FileCollection, cfg *configuration.Configuration, manag
 	fmt.Fprintf(f, "StackSys = %v\n", utils.FormatBytes(int64(m.StackSys)))
 	fmt.Fprintf(f, "Time to get objects = %s\n", el)
 	fmt.Fprintf(f, "Time to download = %s\n", elapsed)
-	fmt.Fprintf(f, "AVG time to download 1 file = %s\n", elapsed/time.Duration(data.Count()))
+	fmt.Fprintf(f, "AVG time to download 1 file = %s\n", elapsed/time.Duration(data.Count()+1))
 	fmt.Fprintf(f, "Time to decompress = %s\n", e)
 }

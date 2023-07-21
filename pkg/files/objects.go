@@ -22,6 +22,7 @@ type FileCollection struct {
 // NewFileCollection returns a new instance of the FileCollection structure with the specified capacity.
 func NewFileCollection() *FileCollection {
 	return &FileCollection{
+		ArchivesChan:    make(chan string, 512),
 		progressMap:     make(map[*File]int64),
 		downloadedFiles: make(map[string]bool),
 		mu:              sync.RWMutex{},

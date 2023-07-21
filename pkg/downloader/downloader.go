@@ -57,7 +57,6 @@ func (downloader *Downloader) DownloadFiles(ctx context.Context, data *files.Fil
 	start := time.Now()
 	workers := downloader.cfg.GetDownloaders()
 	data.DownloadChan = make(chan *files.File, workers)
-	data.ArchivesChan = make(chan string, workers)
 
 	go downloader.printer.StartProgressTicker(ctx, data, start, &downloader.activeFiles)
 

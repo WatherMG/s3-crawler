@@ -142,7 +142,7 @@ func (config *Configuration) calcGoroutinesForCores(cores uint8) uint16 {
 		if config.IsDecompress {
 			return defaultGoroutines + (maxGoroutines >> 3)
 		}
-		return defaultGoroutines << 1
+		return defaultGoroutines
 	case cores >= midCPUThresh:
 		if config.IsDecompress {
 			return defaultGoroutines + (maxGoroutines >> 3)
