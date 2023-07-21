@@ -75,7 +75,7 @@ func main() {
 	if err = cache.LoadFromDir(cfg); err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(cfg.LocalPath)
+	// defer os.RemoveAll(cfg.LocalPath)
 
 	client, err := s3client.NewClient(ctx, cfg)
 	if err != nil {
@@ -98,7 +98,7 @@ func main() {
 
 	s := time.Now()
 	var e time.Duration
-	go func() {
+	go func(s time.Time) {
 		var wg sync.WaitGroup
 		for filePath := range data.ArchivesChan {
 			wg.Add(1)
@@ -112,7 +112,7 @@ func main() {
 		}
 		wg.Wait()
 		e = time.Since(s)
-	}()
+	}(s)
 
 	start := time.Now()
 	if err = manager.DownloadFiles(ctx, data); err != nil {

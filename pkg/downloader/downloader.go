@@ -23,12 +23,14 @@ import (
 	"github.com/aws/smithy-go/logging"
 )
 
+const maxRetries = 3
+
 type Downloader struct {
 	cfg *configuration.Configuration
 	*s3client.Client
-	wg                  sync.WaitGroup
 	smallFileDownloader *manager.Downloader
 	printer             printprogress.ProgressPrinter
+	wg                  sync.WaitGroup
 	activeFiles         atomic.Int32
 }
 
@@ -44,6 +46,7 @@ func NewDownloader(client *s3client.Client, cfg *configuration.Configuration) *D
 			printer: printprogress.NewPrinter(cfg),
 			smallFileDownloader: manager.NewDownloader(client, func(d *manager.Downloader) {
 				d.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.Buffer32KB)
+				d.Concurrency = 1
 			}),
 		}
 	})
@@ -153,8 +156,8 @@ func (downloader *Downloader) createDownloader(fileSize int64, chuckSize int64) 
 
 	newDownloader.PartSize = chuckSize
 	newDownloader.Concurrency = parts
-	newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.MiB)
-	newDownloader.PartBodyMaxRetries = 3
+	newDownloader.BufferProvider = manager.NewPooledBufferedWriterReadFromProvider(files.Buffer512KB)
+	newDownloader.PartBodyMaxRetries = maxRetries
 
 	return newDownloader
 }

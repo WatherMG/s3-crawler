@@ -18,6 +18,7 @@ const (
 	Buffer64KB
 	Buffer128KB
 	Buffer256KB
+	Buffer512KB
 	KiB = 1 << 10
 	MiB = 1 << 20
 )
