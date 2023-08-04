@@ -16,15 +16,15 @@
     "maxPages": 0,
     "chunkSizeMB": 0
   },
-  "numCPU": 16,
-  "downloaders": 0,
-  "decompress": true,
-  "withDirName": true,
-  "deleteAfterDecompress": false,
+  "numCPU": 4,
+  "downloaders": 192,
+  "isFlattenName": false,
+  "decompress": false,
+  "decompressWithDirName": false,
   "withParts": false ,
-  "downloadPath": "/tmp/upload/data",
+  "downloadPath": "/mnt/c/data",
   "progress" : {
-    "withProgressBar": false,
+    "withProgressBar": true,
     "delay": 500,
     "barSize": 20
   }

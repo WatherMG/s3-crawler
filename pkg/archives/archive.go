@@ -1,15 +1,12 @@
 package archives
 
 import (
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
-	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
 	"s3-crawler/pkg/utils"
 )
@@ -17,103 +14,65 @@ import (
 var supportedArchiveExtensions = []string{".gz", ".gzip"}
 
 type Archiver interface {
-	Decompress(destination string) error
+	decompress(file *files.File, data *files.FileCollection) error
 }
 
 type Gzip struct {
-	Path string
-}
-type Tar struct {
-	Path string
-}
-type Zip struct {
-	Path string
 }
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		buffer := make([]byte, files.Buffer32KB)
-		return &buffer
+		return new(bytes.Buffer)
 	},
 }
 
-func (g Gzip) Decompress(destination string) error {
-	filename := filepath.Base(g.Path)
-	target := filepath.Join(destination, strings.TrimSuffix(filename, filepath.Ext(filename))+"_unpacked")
+func getBuffer() *bytes.Buffer {
+	return bufferPool.Get().(*bytes.Buffer)
+}
 
-	reader, err := os.Open(g.Path)
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
+func putBuffer(buf *bytes.Buffer) {
+	buf.Reset()
+	bufferPool.Put(buf)
+}
 
-	archive, err := gzip.NewReader(reader)
+func (g *Gzip) decompress(file *files.File, data *files.FileCollection) error {
+	compressedData := getBuffer()
+	defer putBuffer(compressedData)
+	compressedData.Write(file.Data.Bytes())
+
+	archive, err := gzip.NewReader(compressedData)
 	if err != nil {
-		return err
+		return fmt.Errorf("gzip reader error: %w", err)
 	}
 	defer archive.Close()
 
-	writer, err := os.Create(target)
-	if err != nil {
+	buffer := getBuffer()
+	defer putBuffer(buffer)
+
+	if _, err = io.Copy(buffer, archive); err != nil {
 		return err
 	}
-	defer writer.Close()
 
-	// Get a buffer from the pool
-	buffer := bufferPool.Get().(*[]byte)
-	defer bufferPool.Put(buffer)
+	file.Data.Reset()
+	file.Data.Grow(buffer.Len())
+	if _, err = buffer.WriteTo(file.Data); err != nil {
+		return err
+	}
+	data.DataChan <- file
 
-	_, err = io.CopyBuffer(writer, archive, *buffer)
-	return err
-}
-
-func (t Tar) Decompress(destination string) error {
-	filename := filepath.Base(t.Path)
-	target := filepath.Join(destination, "decompressed", strings.TrimSuffix(filename, filepath.Ext(filename)))
-	fmt.Println(target)
 	return nil
 }
 
-func (z Zip) Decompress(destination string) error {
-	filename := filepath.Base(z.Path)
-	target := filepath.Join(destination, "decompressed", strings.TrimSuffix(filename, filepath.Ext(filename)))
-	fmt.Println(target)
-	return nil
-}
-
-func decompress(path, destination string) error {
+// ProcessFile выбирает функцию для работы декомпрессора в зависимости от типа файла.
+func ProcessFile(file *files.File, data *files.FileCollection) error {
 	var archive Archiver
-	if err := utils.CreatePath(destination); err != nil {
-		return err
-	}
-	switch filepath.Ext(path) {
+	switch file.Extension {
 	case ".gz", ".gzip":
-		archive = Gzip{Path: path}
-		return archive.Decompress(destination)
+		archive = &Gzip{}
+		return archive.decompress(file, data)
 	default:
 		return fmt.Errorf("unsupported archive type")
 	}
-}
-func DecompressFile(path string, cfg *configuration.Configuration) error {
-	fileName := filepath.Base(path)
-	if !IsSupportedArchive(fileName) {
-		return fmt.Errorf("unsupported achive: %s", filepath.Ext(fileName))
-	}
-	var decompressedPath string
-	if cfg.IsWithDirName {
-		decompressedPath = filepath.Join(cfg.LocalPath, "decompressed", fileName)
-	} else {
-		decompressedPath = filepath.Join(cfg.LocalPath, "decompressed")
-	}
-	if err := decompress(path, decompressedPath); err != nil {
-		return err
-	}
-	if cfg.IsDeleteAfterDecompress {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func IsSupportedArchive(name string) bool {

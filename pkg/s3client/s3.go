@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"s3-crawler/pkg/cacher"
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/printprogress"
 	"s3-crawler/pkg/utils"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -32,6 +34,7 @@ type Client struct {
 	cfg          *configuration.Configuration // Configuration for the S3 client.
 	input        *s3.ListObjectsV2Input       // Input for the ListObjectsV2 operation.
 	wg           sync.WaitGroup               // WaitGroup to wait for goroutines to finish.
+	printer      *printprogress.Status
 	extensions   []string
 	nameMask     string
 	minSize      int64
@@ -58,6 +61,7 @@ func NewClient(ctx context.Context, cfg *configuration.Configuration) (*Client, 
 				MaxKeys: int32(cfg.Pagination.MaxKeys), // The maximum number of keys to return in each page of results.
 			},
 			wg:         sync.WaitGroup{},
+			printer:    printprogress.NewStatusPrinter(ctx, cfg.Progress.Delay, true),
 			minSize:    cfg.GetMinFileSize(),
 			maxSize:    cfg.GetMaxFileSize(),
 			extensions: strings.Split(cfg.Extension, ","),
@@ -103,9 +107,9 @@ func (client *Client) CheckBucket(ctx context.Context) error {
 		return err
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w, Bucket name: %s", err, client.cfg.BucketName)
 	}
-	log.Printf("Bucket exist: %s", client.cfg.BucketName)
+	log.Printf("Bucket exist: %s.\n", client.cfg.BucketName)
 
 	var resp *s3.GetBucketAccelerateConfigurationOutput
 	err = client.doRequestWithRetry(ctx, func(reqCtx context.Context) error {
@@ -132,13 +136,16 @@ func (client *Client) CheckBucket(ctx context.Context) error {
 // ListObjects lists objects from the bucket specified in the configuration and
 // sends them to be processed.
 func (client *Client) ListObjects(ctx context.Context, data *files.FileCollection, cache *cacher.FileCache) error {
+	defer cache.Clear()
+	if err := client.CheckBucket(ctx); err != nil {
+		return err
+	}
 	start := time.Now()
 	if err := client.processPages(ctx, cache, data); err != nil {
 		return err
 	}
 
-	fmt.Printf("Recive all objects in bucket. Need to download [%d] file(s). Elapsed: %s\n", data.Count(), time.Since(start))
-	cache.Clear()
+	fmt.Printf("All requested objects from bucket retrieved in: %s. Need to download %d file(s). \n", time.Since(start).Truncate(time.Millisecond), data.Count())
 	return nil
 }
 
@@ -163,8 +170,9 @@ func (client *Client) processPages(ctx context.Context, cache *cacher.FileCache,
 		}
 
 		client.pagesCount++
-		fmt.Printf("\rPage %d", client.pagesCount)
+		client.printer.Send(fmt.Sprintf("Retrieving requested objects from the bucket. Current page %d", client.pagesCount))
 	}
+	client.printer.Stop()
 
 	return nil
 }
@@ -200,7 +208,13 @@ func (client *Client) sendObjectsToMap(object types.Object, cache *cacher.FileCa
 		etag := strings.Trim(*object.ETag, "\"")
 		downloaded := cache.HasFile(name, etag, object.Size)
 		if !downloaded {
-			file := files.NewFileFromObject(object, client.cfg.LocalPath)
+			file := files.NewFileFromObject(
+				object,
+				client.cfg.LocalPath,
+				client.cfg.IsFlattenName,
+				client.cfg.IsWithDirName,
+				client.cfg.IsDecompress,
+			)
 			data.AddToProgress(file)
 		}
 		cache.RemoveFile(name)
@@ -209,7 +223,12 @@ func (client *Client) sendObjectsToMap(object types.Object, cache *cacher.FileCa
 
 func (client *Client) isValidObject(object types.Object) (string, bool) {
 	// Normalize the object key by replacing slashes with underscores and converting to lowercase
-	name := strings.ToLower(strings.ReplaceAll(*object.Key, "/", "_"))
+	var name string
+	if client.cfg.IsFlattenName {
+		name = strings.ToLower(strings.ReplaceAll(*object.Key, "/", "_"))
+	} else {
+		name = filepath.Base(*object.Key)
+	}
 
 	// Check if the object has a valid file extension
 	hasValidExt := utils.HasValidExtension(name, client.extensions)

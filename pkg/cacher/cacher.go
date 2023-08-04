@@ -12,16 +12,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"s3-crawler/pkg/configuration"
 	"s3-crawler/pkg/files"
+	"s3-crawler/pkg/printprogress"
 	"s3-crawler/pkg/utils"
 )
 
+const status = "Loading and comparing cache"
+
 func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
+	c.printer.Send(fmt.Sprintf(status))
+	defer c.printer.Stop()
+	if _, err := os.Stat(cfg.LocalPath); os.IsNotExist(err) {
+		return nil
+	}
 	start := time.Now()
-	numWorkers := cfg.NumCPU
+	numWorkers := cfg.NumCPU * 5
 	filesChan := make(chan string, numWorkers)
 	extensions := strings.Split(cfg.Extension, ",")
 	nameMask := strings.ToLower(cfg.NameMask)
@@ -42,21 +51,31 @@ func (c *FileCache) LoadFromDir(cfg *configuration.Configuration) error {
 }
 
 func (c *FileCache) startWorkers(numWorkers uint8, wg *sync.WaitGroup, filesChan chan string, chunkSize int64) {
+	var currentFile atomic.Int32
+
 	for i := uint8(0); i <= numWorkers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(currentFile *atomic.Int32, printer *printprogress.Status) {
 			defer wg.Done()
 			for path := range filesChan {
 				c.processFile(path, chunkSize)
+				currentFile.Add(1)
+				if currentFile.Load()%1000 == 0 {
+					printer.Send(fmt.Sprintf("%s. Current file %d", status, currentFile.Load()))
+				}
 			}
-		}()
+		}(&currentFile, c.printer)
 	}
+
 }
 
 func (c *FileCache) processFile(path string, chunkSize int64) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
-		fmt.Printf("Error stating file %s: %s\n", path, err.Error())
+		if os.IsNotExist(err) {
+			return
+		}
+		fmt.Printf("Error get file info %s: %s\n", path, err.Error())
 		return
 	}
 
@@ -68,10 +87,10 @@ func (c *FileCache) processFile(path string, chunkSize int64) {
 		}
 
 		file := files.NewFile()
-		file.Key = info.Name()
+		file.Name = info.Name()
 		file.ETag = etag
 		file.Size = info.Size()
-		c.AddFile(info.Name(), file)
+		c.AddFile(file.Name, file)
 	}
 }
 
@@ -83,6 +102,8 @@ func (c *FileCache) walkDir(dir, nameMask string, filesChan chan string, extensi
 		if !d.IsDir() {
 			if c.isValidObject(path, nameMask, extensions) {
 				filesChan <- path
+			} else {
+				c.skipped++
 			}
 		}
 		return nil

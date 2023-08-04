@@ -142,13 +142,12 @@ func progressTicker(ctx context.Context, data *files.FileCollection, start time.
 					progressRatio,
 					int(downloads),
 				)
-			default:
-				if data.DownloadChan != nil && downloads == 0 {
-					for _, r := range `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` {
-						fmt.Printf("\u001B[2K\r%c Waiting metadata to download from bucket.", r)
-						time.Sleep(delay)
-					}
+			case data.DataChan != nil && len(data.DataChan) > 0 && downloads == 0:
+				for _, r := range `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` {
+					fmt.Printf("\u001B[2K\r%c Write to disk. Remain [%d] file(s). Archiver [%d] Downloaded [%d]", r, len(data.DataChan), len(data.ArchivesChan), len(data.DownloadChan))
+					time.Sleep(delay)
 				}
+			default:
 			}
 		}
 	}

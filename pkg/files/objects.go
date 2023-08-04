@@ -6,28 +6,37 @@ import (
 	"time"
 )
 
+const growChanCoefficient = 10
+
 // FileCollection represents a collection of File objects.
 type FileCollection struct {
 	DownloadChan    chan *File // DownloadChan is a channel of File objects.
-	ArchivesChan    chan string
-	totalBytes      int64        // totalBytes is the total number of bytes in the DownloadChan collection.
-	count           uint32       // count is the current count of objects in the DownloadChan collection.
+	ArchivesChan    chan *File
+	DataChan        chan *File
+	totalBytes      int64  // totalBytes is the total number of bytes in the DownloadChan collection.
+	count           uint32 // count is the current count of objects in the DownloadChan collection.
+	archivesCount   int
 	progress        atomic.Int64 // progress is the current sum of a bytes downloaded from bucket
 	progressMap     map[*File]int64
-	downloadedFiles map[string]bool
+	DownloadedFiles map[*File]struct{}
 	mu              sync.RWMutex
 	wg              sync.WaitGroup
 }
 
 // NewFileCollection returns a new instance of the FileCollection structure with the specified capacity.
-func NewFileCollection() *FileCollection {
+func NewFileCollection(capacity int) *FileCollection {
 	return &FileCollection{
-		ArchivesChan:    make(chan string, 512),
+		DownloadChan:    make(chan *File, capacity*growChanCoefficient),
 		progressMap:     make(map[*File]int64),
-		downloadedFiles: make(map[string]bool),
+		DownloadedFiles: make(map[*File]struct{}),
 		mu:              sync.RWMutex{},
 		wg:              sync.WaitGroup{},
 	}
+}
+
+func (fc *FileCollection) CreateChannels() {
+	fc.DataChan = make(chan *File, fc.Count())
+	fc.ArchivesChan = make(chan *File, fc.ArchivesCount())
 }
 
 func (fc *FileCollection) GetDataToDownload() {
@@ -42,6 +51,9 @@ func (fc *FileCollection) AddToProgress(file *File) {
 	fc.progressMap[file] = 0
 	fc.totalBytes += file.Size
 	fc.count++
+	if file.IsArchive() {
+		fc.archivesCount++
+	}
 }
 
 // GetStatistics returns statistics about the files in the collection.
@@ -49,7 +61,7 @@ func (fc *FileCollection) GetStatistics(duration time.Duration) (count, download
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	count = fc.count
-	downloadedCount = uint32(len(fc.downloadedFiles))
+	downloadedCount = uint32(len(fc.DownloadedFiles))
 	remainingCount = count - downloadedCount
 	totalBytes = fc.totalBytes
 	progressBytes = fc.progress.Load()
@@ -63,10 +75,16 @@ func (fc *FileCollection) UpdateProgress(writtenBytes int64) {
 	fc.progress.Add(writtenBytes)
 }
 
-func (fc *FileCollection) MarkAsDownloaded(name string) {
+func (fc *FileCollection) MarkAsDownloaded(file *File) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
-	fc.downloadedFiles[name] = true
+	fc.DownloadedFiles[file] = struct{}{}
+}
+
+func (fc *FileCollection) ArchivesCount() int {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.archivesCount
 }
 
 // Count returns the current count of files in the collection.
@@ -76,9 +94,9 @@ func (fc *FileCollection) Count() uint32 {
 	return fc.count
 }
 
-func (fc *FileCollection) IsDownloaded(name string) bool {
+func (fc *FileCollection) IsDownloaded(file *File) bool {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
-	_, ok := fc.downloadedFiles[name]
+	_, ok := fc.DownloadedFiles[file]
 	return ok
 }
